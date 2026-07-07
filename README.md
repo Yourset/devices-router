@@ -1,129 +1,142 @@
-# Devices Router / Flow Keyboard Bridge
+# Devices Router
 
-一个给 Logitech Flow 补键盘联动的小工具。
+一个给 Logitech Flow 补“普通键盘跟随”的 Windows 小工具。
 
-Logi Flow 继续负责鼠标跨屏，这个工具只负责把主电脑键盘转发到副电脑。目标是尽量“无脑”：主电脑打开 Host，副电脑打开 Remote，鼠标去哪边，键盘就跟去哪边。
+Logitech Flow 继续负责鼠标跨电脑移动，Devices Router 负责把主电脑的键盘输入转发到副电脑。目标是尽量无脑：两台电脑都打开软件，鼠标在哪边动，键盘就跟到哪边。
 
-## 当前能力
+English documentation: [README.en.md](README.en.md)
 
-- Windows -> Windows 键盘转发
-- 主电脑自动开放必要防火墙规则
-- 副电脑自动发现主电脑
-- 鼠标移动自动切换键盘目标
-- 主电脑快捷键手动兜底
-- 副电脑 H5 本地控制台
-- 主电脑向副电脑提供局域网自动更新包
+## 当前状态
 
-## 快速开始
+- 平台：Windows -> Windows
+- 当前主线版本：Tauri/Rust 桌面版，源码在 `apps/desktop-tauri/`
+- 当前版本：`v0.1.12`
+- 连接端口：
+  - TCP `8765`：键盘、控制消息、心跳
+  - UDP `8766`：主电脑自动发现
+  - TCP `8767`：局域网自动更新
 
-### 主电脑
+## 功能
 
-双击运行：
+- 主电脑低级键盘 hook 捕获按键
+- 副电脑使用 Windows `SendInput` 注入按键
+- 主电脑和副电脑自动发现、自动重连
+- 鼠标活动自动切换键盘目标
+- 主电脑/副电脑双向心跳检测连接状态
+- 副电脑从主电脑局域网自动更新
+- 日志复制、导出、清空
+- 记住上次模式，支持开机自启动选项
 
-```text
-FlowKeyboardHost.exe
-```
+## 快速使用
 
-保持窗口打开。主电脑会监听键盘、广播发现信息，并提供更新服务。
+1. 在主电脑安装并打开 `Devices Router`。
+2. 点击 `主电脑模式`，保持窗口运行。
+3. 在副电脑安装并打开同一个 `Devices Router`。
+4. 点击 `副电脑模式`，等待自动找到主电脑。
+5. 在副电脑打开记事本、聊天框、IDE 等目标输入框。
+6. 鼠标移动到副电脑，键盘应自动跟过去；鼠标回主电脑，键盘应回本机。
 
-### 副电脑
+也可以手动切换：
 
-双击运行：
-
-```text
-FlowKeyboardRemote.exe
-```
-
-新版本会自动打开一个本地网页控制台。连上主电脑后，在副电脑打开记事本、聊天框、IDE 等目标输入框即可接收键盘。
-
-## 快捷键
-
-- `Ctrl+Alt+1`：键盘回到主电脑
-- `Ctrl+Alt+2`：键盘转到副电脑
-- `Ctrl+Alt+Esc`：退出主电脑监听
-
-## 工作方式
-
-```mermaid
-flowchart LR
-    Host["主电脑 Host<br/>键盘监听 + 鼠标检测"] -->|TCP 8765| Remote["副电脑 Remote Helper<br/>Windows 输入注入"]
-    Host -->|UDP 8766| Discover["局域网发现"]
-    Host -->|TCP 8767| Update["自动更新文件"]
-    Remote --> H5["本地 H5 控制台<br/>127.0.0.1 随机端口"]
-```
-
-副电脑的 H5 页面只是控制台。真正把键盘输入写进 Windows 目标窗口的仍然是本地 helper，因为浏览器网页不能直接模拟系统级键盘输入到其他软件。
+- 主电脑快捷键 `Ctrl+Alt+1`：键盘回主电脑
+- 主电脑快捷键 `Ctrl+Alt+2`：键盘到副电脑
+- 软件界面按钮：`键盘到主电脑` / `键盘到副电脑`
 
 ## 自动更新
 
-主电脑启动后，会从 `updates/manifest.json` 提供更新信息。副电脑连接成功后会检查主电脑上的版本：
+主电脑启动后会提供局域网更新服务。副电脑连接主电脑后会检查：
 
-- 如果版本一致，只显示“已经是最新版本”。
-- 如果版本不同，会下载并校验文件大小和 `sha256`。
-- 校验通过后替换本地 exe。
+- 如果版本一致，显示已是最新版本。
+- 如果主电脑版本更新，副电脑会下载、校验并安装更新包。
+- 更新包清单位于主电脑本机：
 
-当前 PyInstaller onefile 版本不会在更新后强制自动重启，避免 Windows 上出现 `_MEI...\python314.dll` 加载失败弹窗。更新完成后重新打开同一个 exe 即可。
+```text
+%LOCALAPPDATA%\Devices Router\updates\manifest.json
+```
+
+开发时发布局域网更新包：
+
+```powershell
+cd apps\desktop-tauri
+powershell.exe -ExecutionPolicy Bypass -File .\scripts\prepare-lan-update.ps1
+```
 
 ## 从源码运行
 
-```powershell
-cd D:\development\随意开发\pc-tools\flow-keyboard-bridge
-.\install.ps1
-```
-
-主电脑：
+需要 Node.js、Rust、Tauri 所需 Windows 构建依赖。
 
 ```powershell
-.\run-server.ps1
+cd apps\desktop-tauri
+npm install
+npm run tauri -- dev
 ```
 
-副电脑：
+打包：
 
 ```powershell
-.\run-client.ps1
+cd apps\desktop-tauri
+npm run tauri -- build
 ```
 
-## 打包
+安装包输出：
 
-```powershell
-.\build-exe.ps1
+```text
+apps/desktop-tauri/src-tauri/target/release/bundle/nsis/
+apps/desktop-tauri/src-tauri/target/release/bundle/msi/
 ```
-
-生成文件：
-
-- `dist\FlowKeyboardHost.exe`
-- `dist\FlowKeyboardRemote.exe`
-- `dist\flow-keyboard-server.exe`
-- `dist\flow-keyboard-client.exe`
-- `dist\updates\manifest.json`
 
 ## 测试
 
 ```powershell
-.\.venv\Scripts\python -m pytest -q
+cargo test --manifest-path apps\desktop-tauri\src-tauri\Cargo.toml
+cd apps\desktop-tauri
+npm run build
 ```
+
+## 常见问题
+
+### 副电脑显示未连接
+
+优先检查：
+
+- 两台电脑是否在同一个局域网
+- 主电脑是否处于 `主电脑模式`
+- Windows 防火墙是否允许 TCP `8765`、TCP `8767`、UDP `8766`
+- VPN/TUN/代理虚拟网卡是否干扰了局域网发现
+
+### 连接了但键盘不过去
+
+看日志中是否有这些信息：
+
+- 副电脑：`切换请求已发出`
+- 主电脑：`副电脑请求：键盘到副电脑`
+- 主电脑：`已转发按键`
+- 副电脑：`已输入按键`
+
+如果副电脑有“已发出”但主电脑没日志，说明控制消息没有到主电脑。如果主电脑有“已转发”但副电脑没有“已输入”，说明副电脑输入注入失败或目标输入框没有焦点。
+
+### 为什么不是纯网页 H5
+
+浏览器网页不能把系统级按键注入到其它 Windows 程序里。现在的界面是 Tauri 桌面壳，真正的键盘捕获和输入注入都在本地 Rust 后端里完成。
+
+## 文档
+
+- [中文使用教程](docs/user-guide.zh.md)
+- [English User Guide](docs/user-guide.en.md)
+- [中文排障手册](docs/troubleshooting.zh.md)
+- [English Troubleshooting](docs/troubleshooting.en.md)
+- [中文视频脚本提纲](docs/video-outline.zh.md)
+- [English Video Outline](docs/video-outline.en.md)
+- [开发故事线](docs/development-story.md)
+- [技术复盘](docs/technical-retrospective.md)
 
 ## 已知限制
 
-- UAC 弹窗、管理员权限窗口、部分游戏可能不接受普通模拟输入。
-- 当前重点保证英文键盘和常用控制键稳定。
-- 副电脑必须让目标输入框获得焦点。
-- H5 客户端不是纯浏览器实现；网页负责显示和控制，键盘注入仍需要本地 helper。
+- 目前主要面向 Windows 双机使用。
+- UAC、管理员权限窗口、部分游戏或安全软件保护窗口可能不接受普通模拟输入。
+- 中文输入法组合态、复杂快捷键、媒体键等还需要继续打磨。
+- 鼠标跟随是基于两边鼠标活动推断，不是读取 Logitech Flow 私有协议。
 
-## 开源状态
+## 项目定位
 
-这是一个个人实用工具，优先解决“没买 Logi 键盘但想让 Flow 体验完整”的场景。代码和文档会继续围绕稳定性、无脑使用、自动更新和教程可读性迭代。
-
-## Tauri/Rust 新版
-
-新版桌面客户端位于：
-
-```text
-apps/desktop-tauri/
-```
-
-它会逐步替代 Python Host/Remote，目标是做成更接近 Clash Verge 的正式桌面软件。当前路线和验证边界见：
-
-```text
-docs/tauri-rust-roadmap.md
-```
+这是一个个人实用工具，优先解决“已经有 Logitech Flow 鼠标跨屏，但没有 Logitech 键盘”的场景。它不破解 Flow，不模拟 Logitech 设备，只做一个独立的键盘桥。
