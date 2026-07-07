@@ -1,4 +1,6 @@
-from flow_keyboard_bridge.updates import UpdateManifest, parse_manifest
+from pathlib import Path
+
+from flow_keyboard_bridge.updates import UpdateManifest, build_update_script, parse_manifest
 
 
 def test_parse_manifest_reads_versions_and_files():
@@ -53,3 +55,16 @@ def test_parse_manifest_reads_integrity_fields():
     update_file = manifest.file_for("remote")
     assert update_file.size == 123
     assert update_file.sha256 == "abc"
+
+
+def test_update_script_restarts_through_scheduled_task():
+    script = build_update_script(
+        123,
+        Path(r"C:\tmp\FlowKeyboardRemote.exe.download"),
+        Path(r"C:\tmp\FlowKeyboardRemote.exe"),
+    )
+
+    assert "schtasks /Create" in script
+    assert "schtasks /Run" in script
+    assert "Start-Process -FilePath " in script
+    assert "Move-Item -Force" in script

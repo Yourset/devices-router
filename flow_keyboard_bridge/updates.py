@@ -151,22 +151,7 @@ def check_remote_update(host: str, role: str = "remote", port: int = UPDATE_PORT
 
 def apply_update_and_restart(source: Path, target: Path) -> None:
     script = target.with_suffix(".update.ps1")
-    script.write_text(
-        "\n".join(
-            [
-                "$ErrorActionPreference = 'Stop'",
-                f"$pidToWait = {os.getpid()}",
-                f"$source = '{source}'",
-                f"$target = '{target}'",
-                "Wait-Process -Id $pidToWait -ErrorAction SilentlyContinue",
-                "Start-Sleep -Milliseconds 300",
-                "Move-Item -Force -LiteralPath $source -Destination $target",
-                "Start-Process -FilePath $target",
-                "Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force",
-            ]
-        ),
-        encoding="utf-8",
-    )
+    script.write_text(build_update_script(os.getpid(), source, target), encoding="utf-8")
     print("[update] applying update and restarting...")
     subprocess.Popen(
         [
@@ -180,6 +165,38 @@ def apply_update_and_restart(source: Path, target: Path) -> None:
         close_fds=True,
     )
     os._exit(0)
+
+
+def build_update_script(pid_to_wait: int, source: Path, target: Path) -> str:
+    source_text = _ps_quote(str(source))
+    target_text = _ps_quote(str(target))
+    return "\n".join(
+        [
+            "$ErrorActionPreference = 'Stop'",
+            f"$pidToWait = {pid_to_wait}",
+            f"$source = {source_text}",
+            f"$target = {target_text}",
+            "Wait-Process -Id $pidToWait -ErrorAction SilentlyContinue",
+            "Start-Sleep -Milliseconds 800",
+            "Move-Item -Force -LiteralPath $source -Destination $target",
+            "$taskName = 'FlowKeyboardBridgeRestart-' + [guid]::NewGuid().ToString('N')",
+            "$restartScript = Join-Path $env:TEMP ($taskName + '.ps1')",
+            "$targetForScript = $target.Replace(\"'\", \"''\")",
+            "$restartContent = @(",
+            "    '$ErrorActionPreference = ''SilentlyContinue'''",
+            "    'Start-Sleep -Seconds 4'",
+            "    ('Start-Process -FilePath ''' + $targetForScript + '''')",
+            "    ('schtasks /Delete /TN ' + $taskName + ' /F | Out-Null')",
+            "    'Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force'",
+            ") -join [Environment]::NewLine",
+            "Set-Content -LiteralPath $restartScript -Value $restartContent -Encoding UTF8",
+            "$startTime = (Get-Date).AddMinutes(1).ToString('HH:mm')",
+            "$taskAction = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ' + '\"' + $restartScript + '\"'",
+            "schtasks /Create /TN $taskName /SC ONCE /ST $startTime /TR $taskAction /F | Out-Null",
+            "schtasks /Run /TN $taskName | Out-Null",
+            "Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force",
+        ]
+    )
 
 
 def default_manifest() -> dict:
@@ -219,3 +236,7 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _ps_quote(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
