@@ -5,13 +5,12 @@ import socket
 import threading
 import time
 
-from pynput import mouse
-
 from .discovery import broadcast_server
 from .keyboard_router import KeyboardRouter, RawKeyEvent
 from .protocol import KeyEvent, MouseActivityEvent, PingEvent, decode_message, encode_message
 from .target_state import TargetState
 from .win_keyboard_hook import run_keyboard_hook
+from .win_mouse import get_cursor_pos
 
 
 class KeyboardBridgeServer:
@@ -34,8 +33,7 @@ class KeyboardBridgeServer:
         discovery_thread.start()
         accept_thread = threading.Thread(target=self._accept_loop, daemon=True)
         accept_thread.start()
-        mouse_thread = mouse.Listener(on_move=self._on_host_mouse_move)
-        mouse_thread.daemon = True
+        mouse_thread = threading.Thread(target=self._host_mouse_poll_loop, daemon=True)
         mouse_thread.start()
 
         print("[server] hotkeys:")
@@ -124,13 +122,26 @@ class KeyboardBridgeServer:
         if not self.router.remote_enabled:
             self.enable_remote()
 
-    def _on_host_mouse_move(self, x, y) -> None:
-        now = time.monotonic()
-        if now - self.last_mouse_switch_at < 0.5:
+    def _host_mouse_poll_loop(self) -> None:
+        try:
+            last_pos = get_cursor_pos()
+        except OSError:
             return
-        self.last_mouse_switch_at = now
-        if self.router.remote_enabled:
-            self.enable_local()
+        while True:
+            time.sleep(0.12)
+            try:
+                current_pos = get_cursor_pos()
+            except OSError:
+                continue
+            if current_pos == last_pos:
+                continue
+            last_pos = current_pos
+            now = time.monotonic()
+            if now - self.last_mouse_switch_at < 0.25:
+                continue
+            self.last_mouse_switch_at = now
+            if self.router.remote_enabled:
+                self.enable_local()
 
     def stop(self) -> None:
         print("[server] exiting")
