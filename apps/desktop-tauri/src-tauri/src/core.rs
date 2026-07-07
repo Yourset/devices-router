@@ -1,5 +1,5 @@
 use crate::app_state::{AppMode, AppRuntime, KeyboardTarget};
-use crate::discovery::{broadcast_host, discover_host};
+use crate::discovery::{broadcast_host, discover_host, scan_local_network};
 use crate::input::send_key_event;
 use crate::keyboard_hook::{run_keyboard_hook, RawKeyEvent};
 use crate::mouse::cursor_position;
@@ -255,6 +255,13 @@ fn resolve_remote_target(runtime: &Arc<AppRuntime>) -> String {
         }
         Err(err) => {
             runtime.log(format!("[remote] discovery failed: {err:#}\n"));
+            runtime.log("[remote] scanning local network...\n");
+            if let Some(found) = scan_local_network(config.tcp_port, Duration::from_millis(120)) {
+                let target = format!("{}:{}", found.host, found.port);
+                runtime.log(format!("[remote] found host by scan: {target}\n"));
+                return target;
+            }
+            runtime.log("[remote] local scan failed, falling back to 127.0.0.1\n");
             format!("127.0.0.1:{}", config.tcp_port)
         }
     }
