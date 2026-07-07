@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Mutex, OnceLock};
 use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, DispatchMessageW, GetMessageW, SetWindowsHookExW, TranslateMessage,
     KBDLLHOOKSTRUCT, MSG, WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
@@ -25,7 +26,8 @@ pub fn run_keyboard_hook(sender: Sender<RawKeyEvent>) -> Result<()> {
     let slot = KEY_SENDER.get_or_init(|| Mutex::new(None));
     *slot.lock().expect("keyboard sender lock poisoned") = Some(sender);
     unsafe {
-        let hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_proc), None, 0)?;
+        let module = GetModuleHandleW(None)?;
+        let hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_proc), Some(module.into()), 0)?;
         let mut message = MSG::default();
         while GetMessageW(&mut message, None, 0, 0).into() {
             let _ = TranslateMessage(&message);

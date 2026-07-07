@@ -13,7 +13,7 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const TCP_PORT: u16 = 8765;
 
@@ -257,6 +257,7 @@ fn run_host_mouse_loop(runtime: Arc<AppRuntime>) {
         runtime.log("[主电脑] 鼠标监听不可用\n");
         return;
     };
+    let mut remote_since: Option<Instant> = None;
     while !runtime.should_stop() {
         let config = runtime.config();
         thread::sleep(Duration::from_millis(
@@ -268,10 +269,26 @@ fn run_host_mouse_loop(runtime: Arc<AppRuntime>) {
         let Ok(current) = cursor_position() else {
             continue;
         };
+        let target_is_remote = runtime.target() == KeyboardTarget::Remote;
+        match (target_is_remote, remote_since) {
+            (true, None) => remote_since = Some(Instant::now()),
+            (false, Some(_)) => remote_since = None,
+            _ => {}
+        }
         if current != last {
             last = current;
-            runtime.set_target(KeyboardTarget::Local);
-            set_key_suppression(false);
+            if target_is_remote {
+                let cooldown_ms = config.mouse_follow.host_priority_cooldown_ms;
+                let in_cooldown = remote_since
+                    .map(|since| since.elapsed() < Duration::from_millis(cooldown_ms))
+                    .unwrap_or(false);
+                if in_cooldown {
+                    continue;
+                }
+                runtime.set_target(KeyboardTarget::Local);
+                set_key_suppression(false);
+                runtime.log("[主电脑] 鼠标移动：键盘回主电脑\n");
+            }
         }
     }
 }
