@@ -13,7 +13,12 @@
 
 ## 安装和启动
 
-两台电脑安装同一个 `Devices Router`。
+普通用户只需要安装包，不需要 Node.js、Rust、Python，也不需要命令行。
+
+1. 从 Release 下载 `Devices Router_版本号_x64-setup.exe`。
+2. 主电脑安装一次。
+3. 副电脑安装一次。
+4. 两台电脑打开同一个 `Devices Router`。
 
 主电脑：
 

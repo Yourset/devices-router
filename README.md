@@ -11,6 +11,7 @@ English documentation: [README.en.md](README.en.md)
 - 平台：Windows -> Windows
 - 当前主线版本：Tauri/Rust 桌面版，源码在 `apps/desktop-tauri/`
 - 当前版本：`v0.1.12`
+- 普通用户：下载并安装 `.exe` 安装包即可，不需要安装 Node.js、Rust、Python 或其它开发依赖。
 - 连接端口：
   - TCP `8765`：键盘、控制消息、心跳
   - UDP `8766`：主电脑自动发现
@@ -29,12 +30,14 @@ English documentation: [README.en.md](README.en.md)
 
 ## 快速使用
 
-1. 在主电脑安装并打开 `Devices Router`。
-2. 点击 `主电脑模式`，保持窗口运行。
-3. 在副电脑安装并打开同一个 `Devices Router`。
-4. 点击 `副电脑模式`，等待自动找到主电脑。
+1. 从 Release 下载 `Devices Router_版本号_x64-setup.exe`。
+2. 在主电脑和副电脑各安装一次，同一个安装包即可。
+3. 主电脑打开 `Devices Router`，点击 `主电脑模式`。
+4. 副电脑打开 `Devices Router`，点击 `副电脑模式`。
 5. 在副电脑打开记事本、聊天框、IDE 等目标输入框。
 6. 鼠标移动到副电脑，键盘应自动跟过去；鼠标回主电脑，键盘应回本机。
+
+开箱即用版本不需要命令行，也不需要安装开发环境。README 后面的源码运行和打包命令只给开发者使用。
 
 也可以手动切换：
 
@@ -62,6 +65,8 @@ powershell.exe -ExecutionPolicy Bypass -File .\scripts\prepare-lan-update.ps1
 ```
 
 ## 从源码运行
+
+这一节只面向开发者。如果你只是使用软件，请下载 Release 里的安装包。
 
 需要 Node.js、Rust、Tauri 所需 Windows 构建依赖。
 

@@ -13,7 +13,12 @@ Recommended setup:
 
 ## Install and Start
 
-Install the same `Devices Router` app on both PCs.
+Normal users only need the installer. Node.js, Rust, Python, and command line usage are not required.
+
+1. Download `Devices Router_version_x64-setup.exe` from the Release page.
+2. Install it on the host PC.
+3. Install it on the remote PC.
+4. Open the same `Devices Router` app on both PCs.
 
 Host PC:
 

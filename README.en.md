@@ -11,6 +11,7 @@ Chinese documentation: [README.md](README.md)
 - Platform: Windows -> Windows
 - Main implementation: Tauri/Rust desktop app in `apps/desktop-tauri/`
 - Current version: `v0.1.12`
+- For normal users: install the `.exe` setup package. Node.js, Rust, Python, and other development dependencies are not required.
 - Ports:
   - TCP `8765`: keyboard events, control messages, heartbeat
   - UDP `8766`: host discovery
@@ -29,12 +30,14 @@ Chinese documentation: [README.md](README.md)
 
 ## Quick Start
 
-1. Install and open `Devices Router` on the host PC.
-2. Click `Host mode` and keep the app running.
-3. Install and open the same app on the remote PC.
-4. Click `Remote mode` and wait for it to find the host.
+1. Download `Devices Router_version_x64-setup.exe` from the Release page.
+2. Install the same package on both the host PC and remote PC.
+3. Open `Devices Router` on the host PC and click `Host mode`.
+4. Open `Devices Router` on the remote PC and click `Remote mode`.
 5. Focus Notepad, chat, an IDE, or any target input field on the remote PC.
 6. Move the mouse to the remote PC; the keyboard should follow. Move back to the host; the keyboard should return.
+
+The ready-to-use installer does not require command line usage or a development environment. The source and build commands below are only for developers.
 
 Manual switching is also available:
 
@@ -62,6 +65,8 @@ powershell.exe -ExecutionPolicy Bypass -File .\scripts\prepare-lan-update.ps1
 ```
 
 ## Run From Source
+
+This section is for developers only. If you just want to use the app, download the installer from Releases.
 
 Requires Node.js, Rust, and the Windows dependencies needed by Tauri.
 
