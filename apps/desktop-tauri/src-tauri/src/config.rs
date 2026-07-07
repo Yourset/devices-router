@@ -20,10 +20,10 @@ impl Default for MouseFollowConfig {
             enabled: true,
             host_mouse_returns_local: true,
             remote_mouse_switches_remote: true,
-            host_poll_interval_ms: 50,
-            remote_report_interval_ms: 500,
-            host_priority_cooldown_ms: 800,
-            switch_debounce_ms: 300,
+            host_poll_interval_ms: 30,
+            remote_report_interval_ms: 80,
+            host_priority_cooldown_ms: 120,
+            switch_debounce_ms: 150,
         }
     }
 }
@@ -62,7 +62,9 @@ impl AppConfig {
         let Ok(payload) = fs::read(&path) else {
             return Self::default();
         };
-        serde_json::from_slice(strip_utf8_bom(&payload)).unwrap_or_default()
+        let mut config: Self = serde_json::from_slice(strip_utf8_bom(&payload)).unwrap_or_default();
+        config.normalize();
+        config
     }
 
     pub fn save(&self) {
@@ -72,6 +74,21 @@ impl AppConfig {
         }
         if let Ok(payload) = serde_json::to_vec_pretty(self) {
             let _ = fs::write(path, payload);
+        }
+    }
+
+    fn normalize(&mut self) {
+        if self.mouse_follow.host_poll_interval_ms == 50 {
+            self.mouse_follow.host_poll_interval_ms = 30;
+        }
+        if self.mouse_follow.remote_report_interval_ms == 500 {
+            self.mouse_follow.remote_report_interval_ms = 80;
+        }
+        if self.mouse_follow.host_priority_cooldown_ms == 800 {
+            self.mouse_follow.host_priority_cooldown_ms = 120;
+        }
+        if self.mouse_follow.switch_debounce_ms == 300 {
+            self.mouse_follow.switch_debounce_ms = 150;
         }
     }
 }
@@ -99,5 +116,21 @@ mod tests {
     fn default_config_remembers_idle_mode() {
         assert_eq!(AppConfig::default().last_mode, "idle");
         assert_eq!(AppConfig::default().theme, "light");
+    }
+
+    #[test]
+    fn normalize_upgrades_old_mouse_follow_defaults() {
+        let mut config = AppConfig::default();
+        config.mouse_follow.host_poll_interval_ms = 50;
+        config.mouse_follow.remote_report_interval_ms = 500;
+        config.mouse_follow.host_priority_cooldown_ms = 800;
+        config.mouse_follow.switch_debounce_ms = 300;
+
+        config.normalize();
+
+        assert_eq!(config.mouse_follow.host_poll_interval_ms, 30);
+        assert_eq!(config.mouse_follow.remote_report_interval_ms, 80);
+        assert_eq!(config.mouse_follow.host_priority_cooldown_ms, 120);
+        assert_eq!(config.mouse_follow.switch_debounce_ms, 150);
     }
 }

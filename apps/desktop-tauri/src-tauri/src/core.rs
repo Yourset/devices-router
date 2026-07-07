@@ -166,19 +166,30 @@ fn handle_host_client(
     let mut ctrl_down = false;
     let mut alt_down = false;
     let mut forwarded_key_logs = 0_u8;
+    let mut last_switch = Instant::now()
+        .checked_sub(Duration::from_secs(1))
+        .unwrap_or_else(Instant::now);
     while !runtime.should_stop() {
         while let Ok(event) = key_rx.try_recv() {
             update_modifier_state(event, &mut ctrl_down, &mut alt_down);
             if event.is_down && ctrl_down && alt_down && event.vk_code == 0x31 {
-                runtime.set_target(KeyboardTarget::Local);
-                set_key_suppression(false);
-                runtime.log("[主电脑] 快捷键切换：键盘回主电脑\n");
+                apply_host_target(
+                    runtime,
+                    KeyboardTarget::Local,
+                    "[主电脑] 快捷键切换：键盘回主电脑\n",
+                    false,
+                );
+                last_switch = Instant::now();
                 continue;
             }
             if event.is_down && ctrl_down && alt_down && event.vk_code == 0x32 {
-                runtime.set_target(KeyboardTarget::Remote);
-                set_key_suppression(true);
-                runtime.log("[主电脑] 快捷键切换：键盘到副电脑\n");
+                apply_host_target(
+                    runtime,
+                    KeyboardTarget::Remote,
+                    "[主电脑] 快捷键切换：键盘到副电脑\n",
+                    false,
+                );
+                last_switch = Instant::now();
                 continue;
             }
             if runtime.target() != KeyboardTarget::Remote {
@@ -226,22 +237,39 @@ fn handle_host_client(
             Ok(_) => match decode_event(line.as_bytes()) {
                 Ok(BridgeEvent::TargetRequest { target }) => match target {
                     TargetSide::Local => {
-                        runtime.set_target(KeyboardTarget::Local);
-                        set_key_suppression(false);
-                        runtime.log("[主电脑] 副电脑请求：键盘回主电脑\n");
+                        apply_host_target(
+                            runtime,
+                            KeyboardTarget::Local,
+                            "[主电脑] 副电脑请求：键盘回主电脑\n",
+                            false,
+                        );
+                        last_switch = Instant::now();
                     }
                     TargetSide::Remote => {
-                        runtime.set_target(KeyboardTarget::Remote);
-                        set_key_suppression(true);
-                        runtime.log("[主电脑] 副电脑请求：键盘到副电脑\n");
+                        apply_host_target(
+                            runtime,
+                            KeyboardTarget::Remote,
+                            "[主电脑] 副电脑请求：键盘到副电脑\n",
+                            false,
+                        );
+                        last_switch = Instant::now();
                     }
                 },
                 Ok(BridgeEvent::MouseActivity {
                     source: MouseSource::Remote,
                 }) => {
-                    runtime.set_target(KeyboardTarget::Remote);
-                    set_key_suppression(true);
-                    runtime.log("[主电脑] 键盘目标：副电脑\n");
+                    if last_switch.elapsed()
+                        >= Duration::from_millis(runtime.config().mouse_follow.switch_debounce_ms)
+                    {
+                        if apply_host_target(
+                            runtime,
+                            KeyboardTarget::Remote,
+                            "[主电脑] 副电脑鼠标活动：键盘到副电脑\n",
+                            true,
+                        ) {
+                            last_switch = Instant::now();
+                        }
+                    }
                 }
                 Ok(other) => runtime.log(format!("[主电脑] 收到消息：{other:?}\n")),
                 Err(err) => runtime.log(format!("[主电脑] 已忽略异常消息：{err:#}\n")),
@@ -264,12 +292,32 @@ fn update_modifier_state(event: RawKeyEvent, ctrl_down: &mut bool, alt_down: &mu
     }
 }
 
+fn apply_host_target(
+    runtime: &Arc<AppRuntime>,
+    target: KeyboardTarget,
+    log_line: &str,
+    log_only_on_change: bool,
+) -> bool {
+    let changed = runtime.target() != target;
+    if !changed && log_only_on_change {
+        return false;
+    }
+    runtime.set_target(target);
+    set_key_suppression(target == KeyboardTarget::Remote);
+    if changed || !log_only_on_change {
+        runtime.log(log_line);
+    }
+    changed
+}
+
 fn run_host_mouse_loop(runtime: Arc<AppRuntime>) {
     let Ok(mut last) = cursor_position() else {
         runtime.log("[主电脑] 鼠标监听不可用\n");
         return;
     };
-    let mut remote_since: Option<Instant> = None;
+    let mut last_switch = Instant::now()
+        .checked_sub(Duration::from_secs(1))
+        .unwrap_or_else(Instant::now);
     while !runtime.should_stop() {
         let config = runtime.config();
         thread::sleep(Duration::from_millis(
@@ -281,25 +329,23 @@ fn run_host_mouse_loop(runtime: Arc<AppRuntime>) {
         let Ok(current) = cursor_position() else {
             continue;
         };
-        let target_is_remote = runtime.target() == KeyboardTarget::Remote;
-        match (target_is_remote, remote_since) {
-            (true, None) => remote_since = Some(Instant::now()),
-            (false, Some(_)) => remote_since = None,
-            _ => {}
-        }
         if current != last {
             last = current;
-            if target_is_remote {
+            if runtime.target() == KeyboardTarget::Remote {
+                let debounce_ms = config.mouse_follow.switch_debounce_ms;
                 let cooldown_ms = config.mouse_follow.host_priority_cooldown_ms;
-                let in_cooldown = remote_since
-                    .map(|since| since.elapsed() < Duration::from_millis(cooldown_ms))
-                    .unwrap_or(false);
-                if in_cooldown {
+                let wait_ms = debounce_ms.max(cooldown_ms);
+                if last_switch.elapsed() < Duration::from_millis(wait_ms) {
                     continue;
                 }
-                runtime.set_target(KeyboardTarget::Local);
-                set_key_suppression(false);
-                runtime.log("[主电脑] 鼠标移动：键盘回主电脑\n");
+                if apply_host_target(
+                    &runtime,
+                    KeyboardTarget::Local,
+                    "[主电脑] 主电脑鼠标活动：键盘回主电脑\n",
+                    true,
+                ) {
+                    last_switch = Instant::now();
+                }
             }
         }
     }
