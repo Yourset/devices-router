@@ -7,7 +7,7 @@ mod keyboard_hook;
 mod mouse;
 mod protocol;
 
-use app_state::{AppMode, AppStatus, SharedState};
+use app_state::{AppMode, AppStatus, KeyboardTarget, SharedState};
 use tauri::Manager;
 
 #[tauri::command]
@@ -36,6 +36,24 @@ fn set_remote_host(host: Option<String>, state: tauri::State<SharedState>) {
     state.set_remote_host(host);
 }
 
+#[tauri::command]
+fn set_keyboard_target(target: String, state: tauri::State<SharedState>) -> Result<(), String> {
+    let target = match target.as_str() {
+        "local" => KeyboardTarget::Local,
+        "remote" => KeyboardTarget::Remote,
+        other => return Err(format!("Unsupported keyboard target: {other}")),
+    };
+    let runtime = state.runtime();
+    runtime.set_target(target);
+    keyboard_hook::set_key_suppression(target == KeyboardTarget::Remote);
+    let label = match target {
+        KeyboardTarget::Local => "主电脑",
+        KeyboardTarget::Remote => "副电脑",
+    };
+    runtime.log(format!("[主电脑] 键盘目标已手动切到：{label}\n"));
+    Ok(())
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -47,7 +65,8 @@ pub fn run() {
             app_status,
             start_mode,
             stop_mode,
-            set_remote_host
+            set_remote_host,
+            set_keyboard_target
         ])
         .run(tauri::generate_context!())
         .expect("error while running Devices Router");

@@ -154,6 +154,7 @@ fn handle_host_client(
     let mut line = String::new();
     let mut ctrl_down = false;
     let mut alt_down = false;
+    let mut forwarded_key_logs = 0_u8;
     while !runtime.should_stop() {
         while let Ok(event) = key_rx.try_recv() {
             update_modifier_state(event, &mut ctrl_down, &mut alt_down);
@@ -184,7 +185,16 @@ fn handle_host_client(
                 writer.write_all(&bytes)?;
                 Ok(())
             }) {
-                Ok(()) => {}
+                Ok(()) => {
+                    if forwarded_key_logs < 5 {
+                        forwarded_key_logs += 1;
+                        let action = if event.is_down { "按下" } else { "松开" };
+                        runtime.log(format!(
+                            "[主电脑] 已转发按键：<{vk}> {action}\n",
+                            vk = event.vk_code
+                        ));
+                    }
+                }
                 Err(err) => {
                     runtime.log(format!("[主电脑] 按键发送失败：{err:#}\n"));
                     return;
@@ -290,6 +300,7 @@ fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
                     .context("spawn remote mouse loop")?;
                 let mut reader = BufReader::new(stream);
                 let mut line = String::new();
+                let mut received_key_logs = 0_u8;
                 while !runtime.should_stop() {
                     line.clear();
                     match reader.read_line(&mut line) {
@@ -300,6 +311,12 @@ fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
                                 if let Err(err) = send_key_event(&key, is_down) {
                                     runtime
                                         .log(format!("[副电脑] 已忽略无法输入的按键：{err:#}\n"));
+                                } else if received_key_logs < 5 {
+                                    received_key_logs += 1;
+                                    let action_label = if is_down { "按下" } else { "松开" };
+                                    runtime.log(format!(
+                                        "[副电脑] 已输入按键：{key} {action_label}\n"
+                                    ));
                                 }
                             }
                             Ok(other) => runtime.log(format!("[副电脑] 收到消息：{other:?}\n")),

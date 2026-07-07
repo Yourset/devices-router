@@ -69,7 +69,7 @@ input {
   min-height: 0;
   overflow: hidden;
   display: grid;
-  grid-template-rows: auto auto auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) minmax(180px, 32vh);
   gap: 16px;
 }
 
@@ -108,10 +108,13 @@ h2 {
   color: #17663a;
 }
 
-.grid {
+.workspace {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
+  align-content: start;
+  overflow: hidden;
+  min-height: 0;
 }
 
 .panel {
@@ -120,6 +123,10 @@ h2 {
   border-radius: 8px;
   padding: 18px;
   min-height: 0;
+}
+
+.panel.wide {
+  grid-column: 1 / -1;
 }
 
 .actions {
@@ -172,6 +179,7 @@ dd {
   box-sizing: border-box;
   user-select: text;
   width: 100%;
+  min-height: 0;
 }
 
 .log-panel {
