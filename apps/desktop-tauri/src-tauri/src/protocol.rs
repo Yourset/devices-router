@@ -44,6 +44,17 @@ pub fn is_legacy_silent_lan_client(peer_ip: &str) -> bool {
     peer_ip != "127.0.0.1" && peer_ip != "::1"
 }
 
+pub fn encode_discovery(port: u16) -> String {
+    format!("devices-router-host:{port}")
+}
+
+pub fn decode_discovery(payload: &str) -> Option<u16> {
+    payload
+        .trim()
+        .strip_prefix("devices-router-host:")
+        .and_then(|port| port.parse::<u16>().ok())
+}
+
 fn trim_newline(payload: &[u8]) -> &[u8] {
     payload
         .strip_suffix(b"\n")
@@ -73,5 +84,13 @@ mod tests {
         assert!(is_legacy_silent_lan_client("192.168.31.54"));
         assert!(!is_legacy_silent_lan_client("127.0.0.1"));
         assert!(!is_legacy_silent_lan_client("::1"));
+    }
+
+    #[test]
+    fn discovery_round_trips_port() {
+        let payload = encode_discovery(8765);
+
+        assert_eq!(decode_discovery(&payload), Some(8765));
+        assert_eq!(decode_discovery("not-devices-router"), None);
     }
 }

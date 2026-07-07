@@ -12,6 +12,7 @@ type AppStatus = {
     tcpPort: number;
     discoveryPort: number;
     updatePort: number;
+    remoteHost: string | null;
     mouseFollow: {
       enabled: boolean;
       hostMouseReturnsLocal: boolean;
@@ -39,6 +40,7 @@ let status: AppStatus = {
     tcpPort: 8765,
     discoveryPort: 8766,
     updatePort: 8767,
+    remoteHost: null,
     mouseFollow: {
       enabled: true,
       hostMouseReturnsLocal: true,
@@ -63,6 +65,12 @@ async function startMode(mode: "host" | "remote") {
 
 async function stopMode() {
   await invoke("stop_mode");
+  await refreshStatus();
+}
+
+async function saveRemoteHost() {
+  const input = document.querySelector<HTMLInputElement>("#remote-host");
+  await invoke("set_remote_host", { host: input?.value || null });
   await refreshStatus();
 }
 
@@ -120,6 +128,19 @@ function render() {
             </dl>
           </article>
         </section>
+        <section class="panel">
+          <h2>网络</h2>
+          <div class="inline-form">
+            <input id="remote-host" value="${status.config.remoteHost || ""}" placeholder="自动发现，或填写主电脑 IP" />
+            <button id="save-host">保存</button>
+          </div>
+          <dl>
+            <div><dt>主电脑地址</dt><dd>${status.config.remoteHost || "自动发现"}</dd></div>
+            <div><dt>键盘端口</dt><dd>${status.config.tcpPort}</dd></div>
+            <div><dt>发现端口</dt><dd>${status.config.discoveryPort}</dd></div>
+            <div><dt>更新端口</dt><dd>${status.config.updatePort}</dd></div>
+          </dl>
+        </section>
         <section class="panel log-panel">
           <h2>日志</h2>
           <pre>${status.logs.map(escapeHtml).join("") || "等待启动..."}</pre>
@@ -130,6 +151,7 @@ function render() {
   document.querySelector("#start-host")?.addEventListener("click", () => startMode("host"));
   document.querySelector("#start-remote")?.addEventListener("click", () => startMode("remote"));
   document.querySelector("#stop")?.addEventListener("click", stopMode);
+  document.querySelector("#save-host")?.addEventListener("click", saveRemoteHost);
 }
 
 function escapeHtml(value: string) {

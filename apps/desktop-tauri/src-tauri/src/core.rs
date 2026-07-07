@@ -1,4 +1,5 @@
 use crate::app_state::{AppMode, AppRuntime, KeyboardTarget};
+use crate::discovery::{broadcast_host, discover_host};
 use crate::input::send_key_event;
 use crate::keyboard_hook::{run_keyboard_hook, RawKeyEvent};
 use crate::mouse::cursor_position;
@@ -49,6 +50,16 @@ fn run_host(runtime: Arc<AppRuntime>) -> Result<()> {
             }
         })
         .context("spawn keyboard hook thread")?;
+    let discovery_runtime = Arc::clone(&runtime);
+    thread::Builder::new()
+        .name("devices-router-discovery-broadcast".to_string())
+        .spawn(move || {
+            let stop_runtime = Arc::clone(&discovery_runtime);
+            if let Err(err) = broadcast_host(move || stop_runtime.should_stop(), TCP_PORT) {
+                discovery_runtime.log(format!("[host] discovery broadcast failed: {err:#}\n"));
+            }
+        })
+        .context("spawn discovery broadcaster")?;
     let mouse_runtime = Arc::clone(&runtime);
     thread::Builder::new()
         .name("devices-router-host-mouse".to_string())
@@ -183,9 +194,10 @@ fn start_remote(runtime: Arc<AppRuntime>) -> Result<()> {
 
 fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
     while !runtime.should_stop() {
-        match TcpStream::connect(("127.0.0.1", TCP_PORT)) {
+        let target = resolve_remote_target(&runtime);
+        match TcpStream::connect(target.as_str()) {
             Ok(mut stream) => {
-                runtime.log(format!("[remote] connected to 127.0.0.1:{TCP_PORT}\n"));
+                runtime.log(format!("[remote] connected to {target}\n"));
                 runtime.set_connected(true);
                 stream.write_all(&encode_event(&BridgeEvent::ClientHello {
                     role: ClientRole::Remote,
@@ -221,12 +233,31 @@ fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
                 runtime.set_connected(false);
             }
             Err(err) => {
-                runtime.log(format!("[remote] connection failed: {err}\n"));
+                runtime.log(format!("[remote] connection failed: {target}, {err}\n"));
                 thread::sleep(Duration::from_secs(2));
             }
         }
     }
     Ok(())
+}
+
+fn resolve_remote_target(runtime: &Arc<AppRuntime>) -> String {
+    let config = runtime.config();
+    if let Some(host) = config.remote_host.as_ref().filter(|host| !host.trim().is_empty()) {
+        return format!("{}:{}", host.trim(), config.tcp_port);
+    }
+    runtime.log("[remote] searching for host...\n");
+    match discover_host(Duration::from_secs(8)) {
+        Ok(found) => {
+            let target = format!("{}:{}", found.host, found.port);
+            runtime.log(format!("[remote] discovered host: {target}\n"));
+            target
+        }
+        Err(err) => {
+            runtime.log(format!("[remote] discovery failed: {err:#}\n"));
+            format!("127.0.0.1:{}", config.tcp_port)
+        }
+    }
 }
 
 fn run_remote_mouse_loop(runtime: Arc<AppRuntime>, mut stream: TcpStream) {

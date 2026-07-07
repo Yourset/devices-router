@@ -32,6 +32,7 @@ pub struct AppConfig {
     pub tcp_port: u16,
     pub discovery_port: u16,
     pub update_port: u16,
+    pub remote_host: Option<String>,
     pub mouse_follow: MouseFollowConfig,
 }
 
@@ -41,6 +42,7 @@ impl Default for AppConfig {
             tcp_port: 8765,
             discovery_port: 8766,
             update_port: 8767,
+            remote_host: None,
             mouse_follow: MouseFollowConfig::default(),
         }
     }

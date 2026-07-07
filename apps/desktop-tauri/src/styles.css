@@ -22,6 +22,14 @@ button:hover {
   background: #edf3fb;
 }
 
+input {
+  border: 1px solid #aab6c8;
+  border-radius: 6px;
+  padding: 9px 10px;
+  font: inherit;
+  min-width: 220px;
+}
+
 .shell {
   min-height: 100vh;
   display: grid;
@@ -111,6 +119,13 @@ h2 {
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+.inline-form {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
 }
 
 dl {

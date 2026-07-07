@@ -99,6 +99,19 @@ impl SharedState {
             config: inner.config.clone(),
         }
     }
+
+    pub fn set_remote_host(&self, host: Option<String>) {
+        let mut inner = self.inner.state.lock().expect("state lock poisoned");
+        inner.config.remote_host = host.and_then(|value| {
+            let trimmed = value.trim().to_string();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
+        });
+        push_log(&mut inner.logs, "[config] remote host updated\n".to_string());
+    }
 }
 
 impl AppRuntime {
