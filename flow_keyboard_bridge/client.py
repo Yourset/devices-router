@@ -9,6 +9,7 @@ from pynput import mouse
 
 from .discovery import discover_server_auto
 from .protocol import KeyEvent, MouseActivityEvent, PingEvent, decode_message, encode_message
+from .updates import check_remote_update
 from .win_input import send_key_event
 
 
@@ -17,6 +18,7 @@ def run_client_once(host: str, port: int) -> None:
     with socket.create_connection((host, port), timeout=5) as sock:
         sock.settimeout(None)
         print("[client] connected. Focus the target app here, then switch on server with Ctrl+Alt+2.")
+        check_remote_update(host, "remote")
         mouse_stop = threading.Event()
         mouse_thread = threading.Thread(target=_send_mouse_activity, args=(sock, mouse_stop), daemon=True)
         mouse_thread.start()
