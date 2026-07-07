@@ -1,10 +1,12 @@
 from flow_keyboard_bridge.gui import BridgeWindow
 from flow_keyboard_bridge.server import run_server
+from flow_keyboard_bridge.firewall import ensure_update_firewall_rule
 from flow_keyboard_bridge.updates import check_local_self_update, start_update_server
 
 
 def main() -> None:
     check_local_self_update("host")
+    ensure_update_firewall_rule()
     start_update_server()
     app = BridgeWindow(
         "Flow Keyboard Bridge - Host",
