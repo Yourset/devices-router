@@ -1,14 +1,14 @@
 use crate::app_state::{AppMode, AppRuntime, KeyboardTarget};
 use crate::discovery::{broadcast_host, discover_host, scan_local_network};
 use crate::input::send_key_event;
-use crate::keyboard_hook::{run_keyboard_hook, RawKeyEvent};
+use crate::keyboard_hook::{run_keyboard_hook, set_key_suppression, RawKeyEvent};
 use crate::mouse::cursor_position;
 use crate::protocol::{
     decode_event, encode_event, BridgeEvent, ClientRole, KeyAction, MouseSource,
 };
 use anyhow::{Context, Result};
 use std::io::{BufRead, BufReader, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
@@ -18,6 +18,7 @@ const TCP_PORT: u16 = 8765;
 
 pub fn start_mode(mode: AppMode, runtime: Arc<AppRuntime>) -> Result<()> {
     runtime.request_stop();
+    set_key_suppression(false);
     thread::sleep(Duration::from_millis(50));
     runtime.start(mode);
     match mode {
@@ -32,7 +33,7 @@ fn start_host(runtime: Arc<AppRuntime>) -> Result<()> {
         .name("devices-router-host".to_string())
         .spawn(move || {
             if let Err(err) = run_host(runtime.clone()) {
-                runtime.log(format!("[host] stopped: {err:#}\n"));
+                runtime.log(format!("[主电脑] 已停止：{err:#}\n"));
             }
         })
         .context("spawn host thread")?;
@@ -46,7 +47,7 @@ fn run_host(runtime: Arc<AppRuntime>) -> Result<()> {
         .name("devices-router-keyboard-hook".to_string())
         .spawn(move || {
             if let Err(err) = run_keyboard_hook(key_tx) {
-                hook_runtime.log(format!("[host] keyboard hook failed: {err:#}\n"));
+                hook_runtime.log(format!("[主电脑] 键盘监听失败：{err:#}\n"));
             }
         })
         .context("spawn keyboard hook thread")?;
@@ -56,7 +57,7 @@ fn run_host(runtime: Arc<AppRuntime>) -> Result<()> {
         .spawn(move || {
             let stop_runtime = Arc::clone(&discovery_runtime);
             if let Err(err) = broadcast_host(move || stop_runtime.should_stop(), TCP_PORT) {
-                discovery_runtime.log(format!("[host] discovery broadcast failed: {err:#}\n"));
+                discovery_runtime.log(format!("[主电脑] 自动发现广播失败：{err:#}\n"));
             }
         })
         .context("spawn discovery broadcaster")?;
@@ -70,17 +71,19 @@ fn run_host(runtime: Arc<AppRuntime>) -> Result<()> {
     listener
         .set_nonblocking(true)
         .context("set host listener nonblocking")?;
-    runtime.log(format!("[host] listening on 0.0.0.0:{TCP_PORT}\n"));
+    runtime.log(format!("[主电脑] 正在监听 0.0.0.0:{TCP_PORT}\n"));
     while !runtime.should_stop() {
         match listener.accept() {
-            Ok((mut stream, address)) => {
-                runtime.log(format!("[host] client connected: {address}\n"));
-                runtime.set_connected(true);
-                let _ = stream.write_all(&encode_event(&BridgeEvent::Ping {
-                    message: "ok".to_string(),
-                })?);
-                handle_host_client(&runtime, stream, &key_rx);
-                runtime.set_connected(false);
+            Ok((stream, address)) => {
+                match accept_remote_client(&runtime, stream, address) {
+                    Ok(Some(stream)) => {
+                        runtime.set_connected(true);
+                        handle_host_client(&runtime, stream, &key_rx);
+                        runtime.set_connected(false);
+                    }
+                    Ok(None) => {}
+                    Err(err) => runtime.log(format!("[主电脑] 已忽略无法握手的连接：{address}，{err:#}\n")),
+                }
             }
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                 thread::sleep(Duration::from_millis(100));
@@ -91,6 +94,52 @@ fn run_host(runtime: Arc<AppRuntime>) -> Result<()> {
     Ok(())
 }
 
+fn accept_remote_client(
+    runtime: &Arc<AppRuntime>,
+    mut stream: TcpStream,
+    address: SocketAddr,
+) -> Result<Option<TcpStream>> {
+    stream
+        .set_read_timeout(Some(Duration::from_millis(900)))
+        .context("设置握手超时失败")?;
+    let mut reader = BufReader::new(stream.try_clone().context("复制握手连接失败")?);
+    let mut line = String::new();
+    match reader.read_line(&mut line) {
+        Ok(0) => {
+            runtime.log(format!("[主电脑] 已忽略空连接：{address}\n"));
+            Ok(None)
+        }
+        Ok(_) => match decode_event(line.as_bytes()) {
+            Ok(BridgeEvent::ClientHello { .. }) => {
+                stream
+                    .set_read_timeout(None)
+                    .context("恢复连接超时失败")?;
+                stream.write_all(&encode_event(&BridgeEvent::Ping {
+                    message: "ok".to_string(),
+                })?)?;
+                runtime.log(format!("[主电脑] 副电脑已连接：{address}\n"));
+                Ok(Some(stream))
+            }
+            Ok(other) => {
+                runtime.log(format!("[主电脑] 已忽略未握手连接：{address}，{other:?}\n"));
+                Ok(None)
+            }
+            Err(err) => {
+                runtime.log(format!("[主电脑] 已忽略非协议连接：{address}，{err:#}\n"));
+                Ok(None)
+            }
+        },
+        Err(err)
+            if err.kind() == std::io::ErrorKind::WouldBlock
+                || err.kind() == std::io::ErrorKind::TimedOut =>
+        {
+            runtime.log(format!("[主电脑] 已忽略扫描/静默连接：{address}\n"));
+            Ok(None)
+        }
+        Err(err) => Err(err).context("读取握手失败"),
+    }
+}
+
 fn handle_host_client(
     runtime: &Arc<AppRuntime>,
     stream: TcpStream,
@@ -99,14 +148,32 @@ fn handle_host_client(
     let mut writer = match stream.try_clone() {
         Ok(writer) => writer,
         Err(err) => {
-            runtime.log(format!("[host] client clone failed: {err}\n"));
+            runtime.log(format!("[主电脑] 连接初始化失败：{err}\n"));
             return;
         }
     };
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
+    let mut ctrl_down = false;
+    let mut alt_down = false;
     while !runtime.should_stop() {
         while let Ok(event) = key_rx.try_recv() {
+            update_modifier_state(event, &mut ctrl_down, &mut alt_down);
+            if event.is_down && ctrl_down && alt_down && event.vk_code == 0x31 {
+                runtime.set_target(KeyboardTarget::Local);
+                set_key_suppression(false);
+                runtime.log("[主电脑] 快捷键切换：键盘回主电脑\n");
+                continue;
+            }
+            if event.is_down && ctrl_down && alt_down && event.vk_code == 0x32 {
+                runtime.set_target(KeyboardTarget::Remote);
+                set_key_suppression(true);
+                runtime.log("[主电脑] 快捷键切换：键盘到副电脑\n");
+                continue;
+            }
+            if runtime.target() != KeyboardTarget::Remote {
+                continue;
+            }
             let payload = BridgeEvent::Key {
                 action: if event.is_down {
                     KeyAction::Down
@@ -121,7 +188,7 @@ fn handle_host_client(
             }) {
                 Ok(()) => {}
                 Err(err) => {
-                    runtime.log(format!("[host] key send failed: {err:#}\n"));
+            runtime.log(format!("[主电脑] 按键发送失败：{err:#}\n"));
                     return;
                 }
             }
@@ -131,7 +198,7 @@ fn handle_host_client(
         match reader.get_mut().set_nonblocking(true) {
             Ok(()) => {}
             Err(err) => {
-                runtime.log(format!("[host] nonblocking failed: {err}\n"));
+                runtime.log(format!("[主电脑] 连接状态设置失败：{err}\n"));
                 break;
             }
         }
@@ -142,14 +209,15 @@ fn handle_host_client(
                     source: MouseSource::Remote,
                 }) => {
                     runtime.set_target(KeyboardTarget::Remote);
-                    runtime.log("[host] keyboard target: remote\n");
+                    set_key_suppression(true);
+                    runtime.log("[主电脑] 键盘目标：副电脑\n");
                 }
-                Ok(other) => runtime.log(format!("[host] received: {other:?}\n")),
-                Err(err) => runtime.log(format!("[host] invalid message: {err:#}\n")),
+                Ok(other) => runtime.log(format!("[主电脑] 收到消息：{other:?}\n")),
+                Err(err) => runtime.log(format!("[主电脑] 已忽略异常消息：{err:#}\n")),
             },
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {}
             Err(err) => {
-                runtime.log(format!("[host] client read failed: {err}\n"));
+                runtime.log(format!("[主电脑] 读取副电脑消息失败：{err}\n"));
                 break;
             }
         }
@@ -157,9 +225,17 @@ fn handle_host_client(
     }
 }
 
+fn update_modifier_state(event: RawKeyEvent, ctrl_down: &mut bool, alt_down: &mut bool) {
+    match event.vk_code {
+        0x11 | 0xA2 | 0xA3 => *ctrl_down = event.is_down,
+        0x12 | 0xA4 | 0xA5 => *alt_down = event.is_down,
+        _ => {}
+    }
+}
+
 fn run_host_mouse_loop(runtime: Arc<AppRuntime>) {
     let Ok(mut last) = cursor_position() else {
-        runtime.log("[host] cursor tracking unavailable\n");
+        runtime.log("[主电脑] 鼠标监听不可用\n");
         return;
     };
     while !runtime.should_stop() {
@@ -176,6 +252,7 @@ fn run_host_mouse_loop(runtime: Arc<AppRuntime>) {
         if current != last {
             last = current;
             runtime.set_target(KeyboardTarget::Local);
+            set_key_suppression(false);
         }
     }
 }
@@ -194,10 +271,13 @@ fn start_remote(runtime: Arc<AppRuntime>) -> Result<()> {
 
 fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
     while !runtime.should_stop() {
-        let target = resolve_remote_target(&runtime);
+        let Some(target) = resolve_remote_target(&runtime) else {
+            thread::sleep(Duration::from_secs(2));
+            continue;
+        };
         match TcpStream::connect(target.as_str()) {
             Ok(mut stream) => {
-                runtime.log(format!("[remote] connected to {target}\n"));
+                runtime.log(format!("[副电脑] 已连接主电脑：{target}\n"));
                 runtime.set_connected(true);
                 stream.write_all(&encode_event(&BridgeEvent::ClientHello {
                     role: ClientRole::Remote,
@@ -218,14 +298,14 @@ fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
                             Ok(BridgeEvent::Key { action, key }) => {
                                 let is_down = matches!(action, KeyAction::Down);
                                 if let Err(err) = send_key_event(&key, is_down) {
-                                    runtime.log(format!("[remote] key ignored: {err:#}\n"));
+                                    runtime.log(format!("[副电脑] 已忽略无法输入的按键：{err:#}\n"));
                                 }
                             }
-                            Ok(other) => runtime.log(format!("[remote] received: {other:?}\n")),
-                            Err(err) => runtime.log(format!("[remote] invalid message: {err:#}\n")),
+                            Ok(other) => runtime.log(format!("[副电脑] 收到消息：{other:?}\n")),
+                            Err(err) => runtime.log(format!("[副电脑] 已忽略异常消息：{err:#}\n")),
                         },
                         Err(err) => {
-                            runtime.log(format!("[remote] read failed: {err}\n"));
+                            runtime.log(format!("[副电脑] 连接读取失败：{err}\n"));
                             break;
                         }
                     }
@@ -233,7 +313,7 @@ fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
                 runtime.set_connected(false);
             }
             Err(err) => {
-                runtime.log(format!("[remote] connection failed: {target}, {err}\n"));
+                runtime.log(format!("[副电脑] 连接失败：{target}，{err}\n"));
                 thread::sleep(Duration::from_secs(2));
             }
         }
@@ -241,35 +321,35 @@ fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
     Ok(())
 }
 
-fn resolve_remote_target(runtime: &Arc<AppRuntime>) -> String {
+fn resolve_remote_target(runtime: &Arc<AppRuntime>) -> Option<String> {
     let config = runtime.config();
     if let Some(host) = config.remote_host.as_ref().filter(|host| !host.trim().is_empty()) {
-        return format!("{}:{}", host.trim(), config.tcp_port);
+        return Some(format!("{}:{}", host.trim(), config.tcp_port));
     }
-    runtime.log("[remote] searching for host...\n");
+    runtime.log("[副电脑] 正在自动寻找主电脑...\n");
     match discover_host(Duration::from_secs(8)) {
         Ok(found) => {
             let target = format!("{}:{}", found.host, found.port);
-            runtime.log(format!("[remote] discovered host: {target}\n"));
-            target
+            runtime.log(format!("[副电脑] 发现主电脑：{target}\n"));
+            Some(target)
         }
         Err(err) => {
-            runtime.log(format!("[remote] discovery failed: {err:#}\n"));
-            runtime.log("[remote] scanning local network...\n");
+            runtime.log(format!("[副电脑] 广播发现失败：{err:#}\n"));
+            runtime.log("[副电脑] 正在扫描本地网络...\n");
             if let Some(found) = scan_local_network(config.tcp_port, Duration::from_millis(120)) {
                 let target = format!("{}:{}", found.host, found.port);
-                runtime.log(format!("[remote] found host by scan: {target}\n"));
-                return target;
+                runtime.log(format!("[副电脑] 扫描找到主电脑：{target}\n"));
+                return Some(target);
             }
-            runtime.log("[remote] local scan failed, falling back to 127.0.0.1\n");
-            format!("127.0.0.1:{}", config.tcp_port)
+            runtime.log("[副电脑] 本地扫描失败，将继续重试。也可以手动填写主电脑 IP。\n");
+            None
         }
     }
 }
 
 fn run_remote_mouse_loop(runtime: Arc<AppRuntime>, mut stream: TcpStream) {
     let Ok(mut last) = cursor_position() else {
-        runtime.log("[remote] cursor tracking unavailable\n");
+        runtime.log("[副电脑] 鼠标监听不可用\n");
         return;
     };
     while !runtime.should_stop() {
@@ -296,7 +376,7 @@ fn run_remote_mouse_loop(runtime: Arc<AppRuntime>, mut stream: TcpStream) {
         }) {
             Ok(()) => {}
             Err(err) => {
-                runtime.log(format!("[remote] mouse report failed: {err:#}\n"));
+                runtime.log(format!("[副电脑] 鼠标活动上报失败：{err:#}\n"));
                 return;
             }
         }

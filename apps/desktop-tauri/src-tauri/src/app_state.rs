@@ -79,7 +79,7 @@ impl SharedState {
         inner.mode = AppMode::Idle;
         inner.connected = false;
         inner.target = KeyboardTarget::Local;
-        push_log(&mut inner.logs, "[app] stopped\n".to_string());
+        push_log(&mut inner.logs, "[应用] 已停止\n".to_string());
     }
 
     pub fn snapshot(&self) -> AppStatus {
@@ -110,7 +110,7 @@ impl SharedState {
                 Some(trimmed)
             }
         });
-        push_log(&mut inner.logs, "[config] remote host updated\n".to_string());
+        push_log(&mut inner.logs, "[配置] 主电脑地址已更新\n".to_string());
     }
 }
 
@@ -122,11 +122,11 @@ impl AppRuntime {
         inner.connected = false;
         inner.target = KeyboardTarget::Local;
         let label = match mode {
-            AppMode::Idle => "idle",
-            AppMode::Host => "host",
-            AppMode::Remote => "remote",
+            AppMode::Idle => "空闲",
+            AppMode::Host => "主电脑",
+            AppMode::Remote => "副电脑",
         };
-        push_log(&mut inner.logs, format!("[app] started {label} mode\n"));
+        push_log(&mut inner.logs, format!("[应用] 已启动{label}模式\n"));
     }
 
     pub fn request_stop(&self) {
@@ -145,6 +145,11 @@ impl AppRuntime {
     pub fn set_target(&self, target: KeyboardTarget) {
         let mut inner = self.state.lock().expect("state lock poisoned");
         inner.target = target;
+    }
+
+    pub fn target(&self) -> KeyboardTarget {
+        let inner = self.state.lock().expect("state lock poisoned");
+        inner.target
     }
 
     pub fn log(&self, line: impl Into<String>) {

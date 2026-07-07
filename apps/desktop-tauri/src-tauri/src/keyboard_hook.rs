@@ -1,5 +1,6 @@
 use anyhow::Result;
 use std::sync::mpsc::Sender;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -14,6 +15,11 @@ pub struct RawKeyEvent {
 }
 
 static KEY_SENDER: OnceLock<Mutex<Option<Sender<RawKeyEvent>>>> = OnceLock::new();
+static SUPPRESS_KEYS: AtomicBool = AtomicBool::new(false);
+
+pub fn set_key_suppression(enabled: bool) {
+    SUPPRESS_KEYS.store(enabled, Ordering::SeqCst);
+}
 
 pub fn run_keyboard_hook(sender: Sender<RawKeyEvent>) -> Result<()> {
     let slot = KEY_SENDER.get_or_init(|| Mutex::new(None));
@@ -45,6 +51,9 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
                     });
                 }
             }
+            if SUPPRESS_KEYS.load(Ordering::SeqCst) {
+                return LRESULT(1);
+            }
         }
     }
     CallNextHookEx(None, code, wparam, lparam)
@@ -63,5 +72,13 @@ mod tests {
 
         assert_eq!(event.vk_code, 65);
         assert!(event.is_down);
+    }
+
+    #[test]
+    fn key_suppression_can_be_toggled() {
+        set_key_suppression(true);
+        assert!(SUPPRESS_KEYS.load(Ordering::SeqCst));
+        set_key_suppression(false);
+        assert!(!SUPPRESS_KEYS.load(Ordering::SeqCst));
     }
 }
