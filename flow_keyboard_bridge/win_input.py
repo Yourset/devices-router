@@ -81,6 +81,8 @@ ctypes.windll.user32.SendInput.argtypes = (wintypes.UINT, ctypes.POINTER(INPUT),
 ctypes.windll.user32.SendInput.restype = wintypes.UINT
 ctypes.windll.user32.MapVirtualKeyW.argtypes = (wintypes.UINT, wintypes.UINT)
 ctypes.windll.user32.MapVirtualKeyW.restype = wintypes.UINT
+ctypes.windll.user32.VkKeyScanW.argtypes = (wintypes.WCHAR,)
+ctypes.windll.user32.VkKeyScanW.restype = wintypes.SHORT
 
 
 def key_name_to_vk(key: str) -> int | None:
@@ -90,7 +92,7 @@ def key_name_to_vk(key: str) -> int | None:
         except ValueError:
             return None
     if len(key) == 1:
-        vk = ctypes.windll.user32.VkKeyScanW(ord(key))
+        vk = ctypes.windll.user32.VkKeyScanW(key)
         if vk == -1:
             return None
         return vk & 0xFF

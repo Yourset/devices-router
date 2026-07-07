@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import argparse
 import socket
-import time
 import threading
+import time
 
 from pynput import mouse
 
 from .discovery import discover_server_auto
-from .protocol import KeyEvent, MouseActivityEvent, PingEvent, decode_message, encode_message
+from .protocol import ClientHelloEvent, KeyEvent, MouseActivityEvent, PingEvent, decode_message, encode_message
 from .updates import check_remote_update
 from .win_input import send_key_event
 
@@ -17,6 +17,7 @@ def run_client_once(host: str, port: int) -> None:
     print(f"[客户端] 正在连接主电脑 {host}:{port} ...")
     with socket.create_connection((host, port), timeout=5) as sock:
         sock.settimeout(None)
+        sock.sendall(encode_message(ClientHelloEvent()))
         print("[客户端] 已连接。请在副电脑打开目标输入框，键盘会跟随鼠标切换。")
         check_remote_update(host, "remote")
         mouse_stop = threading.Event()
@@ -42,11 +43,11 @@ def _send_mouse_activity(sock: socket.socket, stop_event: threading.Event) -> No
     last_sent_at = 0.0
     lock = threading.Lock()
 
-    def on_move(x, y) -> None:
+    def on_move(x, y) -> bool | None:
         nonlocal last_sent_at
         now = time.monotonic()
         if now - last_sent_at < 0.5:
-            return
+            return None
         last_sent_at = now
         with lock:
             try:
@@ -54,6 +55,7 @@ def _send_mouse_activity(sock: socket.socket, stop_event: threading.Event) -> No
             except OSError:
                 stop_event.set()
                 return False
+        return None
 
     listener = mouse.Listener(on_move=on_move)
     listener.start()
@@ -68,7 +70,7 @@ def run_client(host: str | None, port: int, reconnect: bool, discovery_timeout: 
         target_port = port
         try:
             if target_host is None:
-                print(f"[客户端] 正在自动寻找主电脑，最多等待 {discovery_timeout:g} 秒 ...")
+                print(f"[客户端] 正在自动寻找主电脑，最多等待 {discovery_timeout:g} 秒...")
                 info = discover_server_auto(port, discovery_timeout)
                 target_host = info.host
                 target_port = info.port

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import socket
 import threading
 import time
 
 from .discovery import broadcast_server
 from .keyboard_router import KeyboardRouter, RawKeyEvent
-from .protocol import KeyEvent, MouseActivityEvent, PingEvent, decode_message, encode_message
+from .protocol import ClientHelloEvent, KeyEvent, MouseActivityEvent, PingEvent, decode_message, encode_message
 from .target_state import TargetState
 from .win_keyboard_hook import run_keyboard_hook
 from .win_mouse import get_cursor_pos
@@ -54,19 +55,61 @@ class KeyboardBridgeServer:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
             server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             server.bind((self.bind_host, self.port))
-            server.listen(1)
+            server.listen(5)
             print(f"[主电脑] 正在监听 {self.bind_host}:{self.port}")
             while True:
                 client, address = server.accept()
                 client.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-                with self.lock:
-                    if self.client is not None:
-                        self.client.close()
-                    self.client = client
-                    self.client.sendall(encode_message(PingEvent()))
-                print(f"[主电脑] 副电脑已连接：{address[0]}:{address[1]}")
-                reader = threading.Thread(target=self._read_client_events, args=(client,), daemon=True)
-                reader.start()
+                if self._accept_client_if_valid(client, address):
+                    reader = threading.Thread(target=self._read_client_events, args=(client,), daemon=True)
+                    reader.start()
+
+    def _accept_client_if_valid(self, client: socket.socket, address) -> bool:
+        old_timeout = client.gettimeout()
+        client.settimeout(2)
+        try:
+            line = client.makefile("rb").readline()
+            event = decode_message(line)
+        except TimeoutError:
+            if self._is_legacy_lan_client(address[0]):
+                client.settimeout(old_timeout)
+                return self._accept_verified_client(client, address)
+            print(f"[主电脑] 已忽略本机静默连接：{address[0]}:{address[1]}")
+            try:
+                client.settimeout(old_timeout)
+            finally:
+                client.close()
+            return False
+        except Exception as exc:
+            print(f"[主电脑] 已忽略非副电脑连接：{address[0]}:{address[1]}，{exc}")
+            try:
+                client.settimeout(old_timeout)
+            finally:
+                client.close()
+            return False
+        client.settimeout(old_timeout)
+
+        if not isinstance(event, ClientHelloEvent):
+            print(f"[主电脑] 已忽略未握手的连接：{address[0]}:{address[1]}")
+            client.close()
+            return False
+
+        return self._accept_verified_client(client, address)
+
+    def _accept_verified_client(self, client: socket.socket, address) -> bool:
+        with self.lock:
+            if self.client is not None:
+                self.client.close()
+            self.client = client
+            self.client.sendall(encode_message(PingEvent()))
+        print(f"[主电脑] 副电脑已连接：{address[0]}:{address[1]}")
+        return True
+
+    def _is_legacy_lan_client(self, host: str) -> bool:
+        try:
+            return not ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            return False
 
     def _read_client_events(self, client: socket.socket) -> None:
         stream = client.makefile("rb")
@@ -79,7 +122,7 @@ class KeyboardBridgeServer:
             if isinstance(event, MouseActivityEvent) and event.source == "remote":
                 self._enable_remote_from_mouse()
 
-    def _handle_raw_keyboard_event(self, action: str, vk_code: int, scan_code: int) -> bool:
+    def _handle_raw_keyboard_event(self, action: str, vk_code: int, scan_code: int) -> bool | str:
         suppress = self.router.handle(RawKeyEvent(action, vk_code))
         self.state.remote_enabled = self.router.remote_enabled
 

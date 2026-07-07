@@ -1,4 +1,4 @@
-APP_VERSION = "0.7.0"
+APP_VERSION = "0.8.0"
 
 HOST_EXE_NAME = "FlowKeyboardHost.exe"
 REMOTE_EXE_NAME = "FlowKeyboardRemote.exe"
