@@ -6,8 +6,9 @@ $configPath = Join-Path $tauriRoot "tauri.conf.json"
 $config = Get-Content -Raw -Path $configPath | ConvertFrom-Json
 $version = [string]$config.version
 $bundleDir = Join-Path $tauriRoot "target\release\bundle\nsis"
-$installerName = "Devices Router_${version}_x64-setup.exe"
-$installer = Join-Path $bundleDir $installerName
+$bundleInstallerName = "Devices Router_${version}_x64-setup.exe"
+$installerName = "DevicesRouter_${version}_x64_setup.exe"
+$installer = Join-Path $bundleDir $bundleInstallerName
 
 if (-not (Test-Path -LiteralPath $installer)) {
   throw "Installer not found: $installer"

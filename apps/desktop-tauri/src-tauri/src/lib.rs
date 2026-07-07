@@ -23,6 +23,18 @@ fn start_mode(mode: String, state: tauri::State<SharedState>) -> Result<(), Stri
         "remote" => AppMode::Remote,
         other => return Err(format!("Unsupported mode: {other}")),
     };
+    let status = state.snapshot();
+    let current_mode = match status.mode.as_str() {
+        "host" => AppMode::Host,
+        "remote" => AppMode::Remote,
+        _ => AppMode::Idle,
+    };
+    if status.running && current_mode == mode {
+        state
+            .runtime()
+            .log("[应用] 当前模式已在运行，无需重复启动\n");
+        return Ok(());
+    }
     core::start_mode(mode, state.runtime()).map_err(|err| err.to_string())?;
     Ok(())
 }

@@ -393,7 +393,15 @@ fn resolve_remote_target(runtime: &Arc<AppRuntime>) -> Option<String> {
             Some(target)
         }
         Err(err) => {
-            runtime.log(format!("[副电脑] 广播发现失败：{err:#}\n"));
+            if err.chain().any(|cause| {
+                cause
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|io| io.raw_os_error() == Some(10048))
+            }) {
+                runtime.log("[副电脑] 广播发现端口被占用，已跳过广播发现。\n");
+            } else {
+                runtime.log(format!("[副电脑] 广播发现失败：{err:#}\n"));
+            }
             runtime.log("[副电脑] 正在扫描本地网络...\n");
             if let Some(found) = scan_local_network(config.tcp_port, Duration::from_millis(120)) {
                 let target = format!("{}:{}", found.host, found.port);
