@@ -6,6 +6,7 @@ mod input;
 mod keyboard_hook;
 mod mouse;
 mod protocol;
+mod startup;
 mod updates;
 
 use app_state::{AppMode, AppStatus, KeyboardTarget, SharedState};
@@ -18,17 +19,13 @@ fn app_status(state: tauri::State<SharedState>) -> AppStatus {
 
 #[tauri::command]
 fn start_mode(mode: String, state: tauri::State<SharedState>) -> Result<(), String> {
-    let mode = match mode.as_str() {
-        "host" => AppMode::Host,
-        "remote" => AppMode::Remote,
-        other => return Err(format!("Unsupported mode: {other}")),
-    };
+    let mode = AppMode::from_str(&mode).ok_or_else(|| format!("Unsupported mode: {mode}"))?;
+    if mode == AppMode::Idle {
+        state.stop_current();
+        return Ok(());
+    }
     let status = state.snapshot();
-    let current_mode = match status.mode.as_str() {
-        "host" => AppMode::Host,
-        "remote" => AppMode::Remote,
-        _ => AppMode::Idle,
-    };
+    let current_mode = AppMode::from_str(&status.mode).unwrap_or(AppMode::Idle);
     if status.running && current_mode == mode {
         state
             .runtime()
@@ -67,16 +64,42 @@ fn set_keyboard_target(target: String, state: tauri::State<SharedState>) -> Resu
     Ok(())
 }
 
+#[tauri::command]
+fn set_theme(theme: String, state: tauri::State<SharedState>) -> Result<(), String> {
+    if !matches!(theme.as_str(), "light" | "soft") {
+        return Err(format!("Unsupported theme: {theme}"));
+    }
+    state.runtime().update_config(|config| config.theme = theme);
+    Ok(())
+}
+
+#[tauri::command]
+fn set_start_on_login(enabled: bool, state: tauri::State<SharedState>) -> Result<(), String> {
+    let runtime = state.runtime();
+    let mode = AppMode::from_str(&runtime.config().last_mode).unwrap_or(AppMode::Host);
+    startup::set_start_on_login(enabled, mode).map_err(|err| err.to_string())?;
+    runtime.update_config(|config| config.start_on_login = enabled);
+    runtime.log(if enabled {
+        "[配置] 已开启开机自动启动\n"
+    } else {
+        "[配置] 已关闭开机自动启动\n"
+    });
+    Ok(())
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let state = SharedState::new(env!("CARGO_PKG_VERSION"));
-            let autostart = std::env::args().find_map(|arg| match arg.as_str() {
+            let arg_mode = std::env::args().find_map(|arg| match arg.as_str() {
                 "--host" => Some(AppMode::Host),
                 "--remote" => Some(AppMode::Remote),
                 _ => None,
             });
+            let remembered_mode = AppMode::from_str(&state.runtime().config().last_mode)
+                .filter(|mode| *mode != AppMode::Idle);
+            let autostart = arg_mode.or(remembered_mode);
             app.manage(state.clone());
             if let Some(mode) = autostart {
                 let runtime = state.runtime();
@@ -93,7 +116,9 @@ pub fn run() {
             start_mode,
             stop_mode,
             set_remote_host,
-            set_keyboard_target
+            set_keyboard_target,
+            set_theme,
+            set_start_on_login
         ])
         .run(tauri::generate_context!())
         .expect("error while running Devices Router");

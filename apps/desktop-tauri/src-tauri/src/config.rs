@@ -1,4 +1,6 @@
 use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::PathBuf;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -34,6 +36,9 @@ pub struct AppConfig {
     pub update_port: u16,
     pub remote_host: Option<String>,
     pub mouse_follow: MouseFollowConfig,
+    pub last_mode: String,
+    pub start_on_login: bool,
+    pub theme: String,
 }
 
 impl Default for AppConfig {
@@ -44,6 +49,55 @@ impl Default for AppConfig {
             update_port: 8767,
             remote_host: None,
             mouse_follow: MouseFollowConfig::default(),
+            last_mode: "idle".to_string(),
+            start_on_login: false,
+            theme: "light".to_string(),
         }
+    }
+}
+
+impl AppConfig {
+    pub fn load() -> Self {
+        let path = config_path();
+        let Ok(payload) = fs::read(&path) else {
+            return Self::default();
+        };
+        serde_json::from_slice(strip_utf8_bom(&payload)).unwrap_or_default()
+    }
+
+    pub fn save(&self) {
+        let path = config_path();
+        if let Some(parent) = path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        if let Ok(payload) = serde_json::to_vec_pretty(self) {
+            let _ = fs::write(path, payload);
+        }
+    }
+}
+
+pub fn app_data_dir() -> PathBuf {
+    std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+        .join("Devices Router")
+}
+
+pub fn config_path() -> PathBuf {
+    app_data_dir().join("config.json")
+}
+
+fn strip_utf8_bom(payload: &[u8]) -> &[u8] {
+    payload.strip_prefix(b"\xef\xbb\xbf").unwrap_or(payload)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_config_remembers_idle_mode() {
+        assert_eq!(AppConfig::default().last_mode, "idle");
+        assert_eq!(AppConfig::default().theme, "light");
     }
 }

@@ -84,7 +84,7 @@ fn check_remote_update_inner(runtime: &Arc<AppRuntime>, host: &str, port: u16) -
     let installer = std::env::temp_dir().join(format!("DevicesRouter-{}-setup.exe", file.version));
     fs::write(&installer, payload).context("写入更新安装包失败")?;
     runtime.log(format!("[更新] 已下载更新包：{}\n", installer.display()));
-    launch_installer_and_exit(&installer)?;
+    launch_installer_and_restart(&installer, runtime.config().last_mode.as_str())?;
     Ok(())
 }
 
@@ -196,12 +196,41 @@ fn verify_update_file(file: &UpdateFile, payload: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn launch_installer_and_exit(path: &Path) -> Result<()> {
-    Command::new(path)
-        .arg("/S")
+fn launch_installer_and_restart(path: &Path, mode: &str) -> Result<()> {
+    let exe = std::env::current_exe().context("获取当前程序路径失败")?;
+    let pid = std::process::id();
+    let mode_arg = match mode {
+        "host" => "--host",
+        "remote" => "--remote",
+        _ => "",
+    };
+    let script = format!(
+        "$ErrorActionPreference='SilentlyContinue'; \
+         Wait-Process -Id {pid} -Timeout 20; \
+         Start-Process -FilePath {installer} -ArgumentList '/S' -Wait -WindowStyle Hidden; \
+         Start-Sleep -Seconds 1; \
+         Start-Process -FilePath {exe} -ArgumentList {mode_arg};",
+        installer = ps_quote(&path.display().to_string()),
+        exe = ps_quote(&exe.display().to_string()),
+        mode_arg = ps_quote(mode_arg)
+    );
+    Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-WindowStyle",
+            "Hidden",
+            "-Command",
+            &script,
+        ])
         .spawn()
-        .context("启动更新安装器失败")?;
+        .context("启动更新重启脚本失败")?;
     std::process::exit(0);
+}
+
+fn ps_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
 }
 
 fn updates_dir() -> PathBuf {

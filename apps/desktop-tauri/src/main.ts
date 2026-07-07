@@ -15,6 +15,9 @@ type AppStatus = {
     discoveryPort: number;
     updatePort: number;
     remoteHost: string | null;
+    lastMode: string;
+    startOnLogin: boolean;
+    theme: "light" | "soft";
     mouseFollow: {
       enabled: boolean;
       hostMouseReturnsLocal: boolean;
@@ -34,7 +37,7 @@ const appRoot = app;
 let activeTab: Tab = "overview";
 let autoFollowLogs = true;
 let status: AppStatus = {
-  version: "0.1.6",
+  version: "0.1.7",
   mode: "idle",
   running: false,
   connected: false,
@@ -45,6 +48,9 @@ let status: AppStatus = {
     discoveryPort: 8766,
     updatePort: 8767,
     remoteHost: null,
+    lastMode: "idle",
+    startOnLogin: false,
+    theme: "light",
     mouseFollow: {
       enabled: true,
       hostMouseReturnsLocal: true,
@@ -83,6 +89,16 @@ async function setKeyboardTarget(target: "local" | "remote") {
   await refreshStatus();
 }
 
+async function setTheme(theme: "light" | "soft") {
+  await invoke("set_theme", { theme });
+  await refreshStatus();
+}
+
+async function setStartOnLogin(enabled: boolean) {
+  await invoke("set_start_on_login", { enabled });
+  await refreshStatus();
+}
+
 async function copyLogs() {
   await navigator.clipboard.writeText(status.logs.join(""));
 }
@@ -103,7 +119,7 @@ function render() {
   const wasAtBottom = oldLog ? oldLog.scrollTop + oldLog.clientHeight >= oldLog.scrollHeight - 24 : true;
 
   appRoot.innerHTML = `
-    <main class="shell">
+    <main class="shell theme-${status.config.theme}">
       <aside class="sidebar">
         <div class="brand">Devices Router</div>
         ${navButton("overview", "总览")}
@@ -233,6 +249,23 @@ function renderUpdateTab() {
           <div><dt>更新包目录</dt><dd>updates/manifest.json</dd></div>
         </dl>
       </article>
+      <article class="panel wide">
+        <h2>偏好</h2>
+        <div class="settings-row">
+          <span>开机自动启动</span>
+          <button id="toggle-start-login">${status.config.startOnLogin ? "已开启" : "已关闭"}</button>
+        </div>
+        <div class="settings-row">
+          <span>界面主题</span>
+          <div class="segmented">
+            <button id="theme-light" class="${status.config.theme === "light" ? "selected" : ""}">清爽浅色</button>
+            <button id="theme-soft" class="${status.config.theme === "soft" ? "selected" : ""}">柔和浅色</button>
+          </div>
+        </div>
+        <dl>
+          <div><dt>上次模式</dt><dd>${modeLabel((status.config.lastMode as AppStatus["mode"]) || "idle")}</dd></div>
+        </dl>
+      </article>
     </section>
   `;
 }
@@ -266,6 +299,9 @@ function bindEvents() {
   document.querySelector("#save-host")?.addEventListener("click", saveRemoteHost);
   document.querySelector("#target-local")?.addEventListener("click", () => setKeyboardTarget("local"));
   document.querySelector("#target-remote")?.addEventListener("click", () => setKeyboardTarget("remote"));
+  document.querySelector("#toggle-start-login")?.addEventListener("click", () => setStartOnLogin(!status.config.startOnLogin));
+  document.querySelector("#theme-light")?.addEventListener("click", () => setTheme("light"));
+  document.querySelector("#theme-soft")?.addEventListener("click", () => setTheme("soft"));
   document.querySelector("#copy-logs")?.addEventListener("click", copyLogs);
   document.querySelector("#download-logs")?.addEventListener("click", downloadLogs);
   document.querySelector("#toggle-autolog")?.addEventListener("click", () => {

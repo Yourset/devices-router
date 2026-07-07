@@ -13,6 +13,33 @@ pub enum AppMode {
     Remote,
 }
 
+impl AppMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AppMode::Idle => "idle",
+            AppMode::Host => "host",
+            AppMode::Remote => "remote",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            AppMode::Idle => "空闲",
+            AppMode::Host => "主电脑",
+            AppMode::Remote => "副电脑",
+        }
+    }
+
+    pub fn from_str(value: &str) -> Option<Self> {
+        match value {
+            "idle" => Some(AppMode::Idle),
+            "host" => Some(AppMode::Host),
+            "remote" => Some(AppMode::Remote),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum KeyboardTarget {
@@ -62,7 +89,7 @@ impl SharedState {
                     connected: false,
                     target: KeyboardTarget::Local,
                     logs: VecDeque::new(),
-                    config: AppConfig::default(),
+                    config: AppConfig::load(),
                 }),
                 stop: AtomicBool::new(false),
             }),
@@ -79,6 +106,8 @@ impl SharedState {
         inner.mode = AppMode::Idle;
         inner.connected = false;
         inner.target = KeyboardTarget::Local;
+        inner.config.last_mode = AppMode::Idle.as_str().to_string();
+        inner.config.save();
         push_log(&mut inner.logs, "[应用] 已停止\n".to_string());
     }
 
@@ -86,12 +115,7 @@ impl SharedState {
         let inner = self.inner.state.lock().expect("state lock poisoned");
         AppStatus {
             version: inner.version.clone(),
-            mode: match inner.mode {
-                AppMode::Idle => "idle",
-                AppMode::Host => "host",
-                AppMode::Remote => "remote",
-            }
-            .to_string(),
+            mode: inner.mode.as_str().to_string(),
             running: inner.mode != AppMode::Idle,
             connected: inner.connected,
             target: inner.target,
@@ -110,6 +134,7 @@ impl SharedState {
                 Some(trimmed)
             }
         });
+        inner.config.save();
         push_log(&mut inner.logs, "[配置] 主电脑地址已更新\n".to_string());
     }
 }
@@ -121,12 +146,12 @@ impl AppRuntime {
         inner.mode = mode;
         inner.connected = false;
         inner.target = KeyboardTarget::Local;
-        let label = match mode {
-            AppMode::Idle => "空闲",
-            AppMode::Host => "主电脑",
-            AppMode::Remote => "副电脑",
-        };
-        push_log(&mut inner.logs, format!("[应用] 已启动{label}模式\n"));
+        inner.config.last_mode = mode.as_str().to_string();
+        inner.config.save();
+        push_log(
+            &mut inner.logs,
+            format!("[应用] 已启动{}模式\n", mode.label()),
+        );
     }
 
     pub fn request_stop(&self) {
@@ -161,11 +186,29 @@ impl AppRuntime {
         let inner = self.state.lock().expect("state lock poisoned");
         inner.config.clone()
     }
+
+    pub fn update_config(&self, updater: impl FnOnce(&mut AppConfig)) -> AppConfig {
+        let mut inner = self.state.lock().expect("state lock poisoned");
+        updater(&mut inner.config);
+        inner.config.save();
+        inner.config.clone()
+    }
 }
 
 fn push_log(logs: &mut VecDeque<String>, line: String) {
     logs.push_back(line);
     while logs.len() > 500 {
         logs.pop_front();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn app_mode_round_trips() {
+        assert_eq!(AppMode::from_str("host"), Some(AppMode::Host));
+        assert_eq!(AppMode::Remote.as_str(), "remote");
     }
 }
