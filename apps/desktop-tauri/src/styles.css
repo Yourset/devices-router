@@ -6,6 +6,7 @@
 
 body {
   margin: 0;
+  overflow: hidden;
 }
 
 button {
@@ -31,9 +32,10 @@ input {
 }
 
 .shell {
-  min-height: 100vh;
+  height: 100vh;
   display: grid;
   grid-template-columns: 216px 1fr;
+  overflow: hidden;
 }
 
 .sidebar {
@@ -64,13 +66,18 @@ input {
 
 .content {
   padding: 24px;
+  min-height: 0;
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+  gap: 16px;
 }
 
 .topbar {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 18px;
+  min-height: 48px;
 }
 
 h1,
@@ -105,7 +112,6 @@ h2 {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
-  margin-bottom: 16px;
 }
 
 .panel {
@@ -113,6 +119,7 @@ h2 {
   border: 1px solid #d8dee9;
   border-radius: 8px;
   padding: 18px;
+  min-height: 0;
 }
 
 .actions {
@@ -150,8 +157,7 @@ dd {
 }
 
 .log-panel pre {
-  min-height: 260px;
-  max-height: 360px;
+  height: 100%;
   overflow: auto;
   margin: 0;
   padding: 14px;
@@ -160,4 +166,10 @@ dd {
   border-radius: 6px;
   white-space: pre-wrap;
   font: 13px/1.5 Consolas, "Microsoft YaHei UI", monospace;
+}
+
+.log-panel {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
 }
