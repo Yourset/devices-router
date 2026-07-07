@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc && vite build",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "build:lan-update": "tauri build && powershell.exe -ExecutionPolicy Bypass -File ./scripts/prepare-lan-update.ps1"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",

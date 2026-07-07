@@ -6,6 +6,7 @@ use crate::mouse::cursor_position;
 use crate::protocol::{
     decode_event, encode_event, BridgeEvent, ClientRole, KeyAction, MouseSource,
 };
+use crate::updates::{check_remote_update, host_from_socket_addr, start_update_server};
 use anyhow::{Context, Result};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -61,6 +62,16 @@ fn run_host(runtime: Arc<AppRuntime>) -> Result<()> {
             }
         })
         .context("spawn discovery broadcaster")?;
+    let update_runtime = Arc::clone(&runtime);
+    let update_port = runtime.config().update_port;
+    thread::Builder::new()
+        .name("devices-router-update-server".to_string())
+        .spawn(move || {
+            if let Err(err) = start_update_server(update_runtime.clone(), update_port) {
+                update_runtime.log(format!("[更新] 更新服务已停止：{err:#}\n"));
+            }
+        })
+        .context("spawn update server")?;
     let mouse_runtime = Arc::clone(&runtime);
     thread::Builder::new()
         .name("devices-router-host-mouse".to_string())
@@ -290,6 +301,15 @@ fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
                 stream.write_all(&encode_event(&BridgeEvent::ClientHello {
                     role: ClientRole::Remote,
                 })?)?;
+                if let Ok(address) = stream.peer_addr() {
+                    if let Some(host) = host_from_socket_addr(&address) {
+                        check_remote_update(
+                            Arc::clone(&runtime),
+                            &host,
+                            runtime.config().update_port,
+                        );
+                    }
+                }
                 let mouse_stream = stream
                     .try_clone()
                     .context("clone remote stream for mouse")?;

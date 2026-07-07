@@ -6,6 +6,7 @@ mod input;
 mod keyboard_hook;
 mod mouse;
 mod protocol;
+mod updates;
 
 use app_state::{AppMode, AppStatus, KeyboardTarget, SharedState};
 use tauri::Manager;

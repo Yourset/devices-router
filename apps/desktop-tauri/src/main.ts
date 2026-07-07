@@ -228,7 +228,9 @@ function renderUpdateTab() {
         <h2>更新</h2>
         <dl>
           <div><dt>当前版本</dt><dd>v${status.version}</dd></div>
-          <div><dt>状态</dt><dd>本地构建版</dd></div>
+          <div><dt>主电脑更新服务</dt><dd>${status.config.updatePort} 端口</dd></div>
+          <div><dt>副电脑自动更新</dt><dd>连上主电脑后自动检查</dd></div>
+          <div><dt>更新包目录</dt><dd>updates/manifest.json</dd></div>
         </dl>
       </article>
     </section>
