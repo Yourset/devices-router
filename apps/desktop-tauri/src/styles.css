@@ -1,0 +1,148 @@
+:root {
+  font-family: "Microsoft YaHei UI", "Segoe UI", system-ui, sans-serif;
+  color: #172033;
+  background: #eef2f7;
+}
+
+body {
+  margin: 0;
+}
+
+button {
+  border: 1px solid #aab6c8;
+  background: #ffffff;
+  color: #172033;
+  border-radius: 6px;
+  padding: 9px 12px;
+  font: inherit;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #edf3fb;
+}
+
+.shell {
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: 216px 1fr;
+}
+
+.sidebar {
+  background: #101723;
+  color: #eef3fb;
+  padding: 18px 14px;
+}
+
+.brand {
+  font-size: 18px;
+  font-weight: 700;
+  margin: 4px 6px 20px;
+}
+
+.nav {
+  width: 100%;
+  text-align: left;
+  margin-bottom: 8px;
+  background: transparent;
+  color: #dbe5f2;
+  border-color: transparent;
+}
+
+.nav.active,
+.nav:hover {
+  background: #223047;
+}
+
+.content {
+  padding: 24px;
+}
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 18px;
+}
+
+h1,
+h2,
+p {
+  margin-top: 0;
+}
+
+h1 {
+  font-size: 24px;
+  margin-bottom: 4px;
+}
+
+h2 {
+  font-size: 16px;
+  margin-bottom: 14px;
+}
+
+.badge {
+  border: 1px solid #aab6c8;
+  background: #ffffff;
+  border-radius: 6px;
+  padding: 8px 12px;
+}
+
+.badge.ok {
+  border-color: #48a868;
+  color: #17663a;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.panel {
+  background: #ffffff;
+  border: 1px solid #d8dee9;
+  border-radius: 8px;
+  padding: 18px;
+}
+
+.actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+dl {
+  margin: 0;
+  display: grid;
+  gap: 10px;
+}
+
+dl div {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+dt {
+  color: #5a6678;
+}
+
+dd {
+  margin: 0;
+  font-weight: 600;
+}
+
+.log-panel pre {
+  min-height: 260px;
+  max-height: 360px;
+  overflow: auto;
+  margin: 0;
+  padding: 14px;
+  background: #0f1520;
+  color: #e7edf7;
+  border-radius: 6px;
+  white-space: pre-wrap;
+  font: 13px/1.5 Consolas, "Microsoft YaHei UI", monospace;
+}

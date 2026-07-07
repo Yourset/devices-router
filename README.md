@@ -113,3 +113,17 @@ cd D:\development\随意开发\pc-tools\flow-keyboard-bridge
 ## 开源状态
 
 这是一个个人实用工具，优先解决“没买 Logi 键盘但想让 Flow 体验完整”的场景。代码和文档会继续围绕稳定性、无脑使用、自动更新和教程可读性迭代。
+
+## Tauri/Rust 新版
+
+新版桌面客户端位于：
+
+```text
+apps/desktop-tauri/
+```
+
+它会逐步替代 Python Host/Remote，目标是做成更接近 Clash Verge 的正式桌面软件。当前路线和验证边界见：
+
+```text
+docs/tauri-rust-roadmap.md
+```
