@@ -145,6 +145,12 @@ impl SharedState {
         inner.config.save();
         push_log(&mut inner.logs, "[配置] 主电脑地址已更新\n".to_string());
     }
+
+    pub fn clear_logs(&self) {
+        let mut inner = self.inner.state.lock().expect("state lock poisoned");
+        inner.logs.clear();
+        push_log(&mut inner.logs, "[日志] 已清空\n".to_string());
+    }
 }
 
 impl AppRuntime {

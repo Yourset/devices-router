@@ -10,7 +10,7 @@ use crate::updates::{check_remote_update, host_from_socket_addr, start_update_se
 use anyhow::{Context, Result};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::sync::mpsc;
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -169,7 +169,21 @@ fn handle_host_client(
     let mut last_switch = Instant::now()
         .checked_sub(Duration::from_secs(1))
         .unwrap_or_else(Instant::now);
+    let mut last_heartbeat = Instant::now();
     while !runtime.should_stop() {
+        if last_heartbeat.elapsed() >= Duration::from_secs(1) {
+            let heartbeat = BridgeEvent::Ping {
+                message: "host-heartbeat".to_string(),
+            };
+            if let Err(err) = encode_event(&heartbeat).and_then(|bytes| {
+                writer.write_all(&bytes)?;
+                Ok(())
+            }) {
+                runtime.log(format!("[主电脑] 副电脑心跳检测失败，已断开：{err:#}\n"));
+                return;
+            }
+            last_heartbeat = Instant::now();
+        }
         while let Ok(event) = key_rx.try_recv() {
             update_modifier_state(event, &mut ctrl_down, &mut alt_down);
             if event.is_down && ctrl_down && alt_down && event.vk_code == 0x31 {
@@ -271,6 +285,7 @@ fn handle_host_client(
                         }
                     }
                 }
+                Ok(BridgeEvent::Ping { .. }) => {}
                 Ok(other) => runtime.log(format!("[主电脑] 收到消息：{other:?}\n")),
                 Err(err) => runtime.log(format!("[主电脑] 已忽略异常消息：{err:#}\n")),
             },
@@ -393,16 +408,21 @@ fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
                 let writer_runtime = Arc::clone(&runtime);
                 thread::Builder::new()
                     .name("devices-router-remote-writer".to_string())
-                    .spawn(move || {
-                        while let Ok(event) = event_rx.recv() {
-                            let result = encode_event(&event).and_then(|bytes| {
-                                writer.write_all(&bytes)?;
-                                Ok(())
-                            });
-                            if let Err(err) = result {
-                                writer_runtime.log(format!("[副电脑] 发送控制消息失败：{err:#}\n"));
-                                break;
-                            }
+                    .spawn(move || loop {
+                        let event = match event_rx.recv_timeout(Duration::from_secs(1)) {
+                            Ok(event) => event,
+                            Err(RecvTimeoutError::Timeout) => BridgeEvent::Ping {
+                                message: "remote-heartbeat".to_string(),
+                            },
+                            Err(RecvTimeoutError::Disconnected) => break,
+                        };
+                        let result = encode_event(&event).and_then(|bytes| {
+                            writer.write_all(&bytes)?;
+                            Ok(())
+                        });
+                        if let Err(err) = result {
+                            writer_runtime.log(format!("[副电脑] 发送控制消息失败：{err:#}\n"));
+                            break;
                         }
                     })
                     .context("spawn remote writer loop")?;
@@ -432,6 +452,7 @@ fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
                                     ));
                                 }
                             }
+                            Ok(BridgeEvent::Ping { .. }) => {}
                             Ok(other) => runtime.log(format!("[副电脑] 收到消息：{other:?}\n")),
                             Err(err) => runtime.log(format!("[副电脑] 已忽略异常消息：{err:#}\n")),
                         },

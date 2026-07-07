@@ -1,6 +1,6 @@
 [package]
 name = "devices-router"
-version = "0.1.10"
+version = "0.1.11"
 description = "Keyboard routing companion for Logitech Flow"
 authors = ["Yourset"]
 edition = "2021"

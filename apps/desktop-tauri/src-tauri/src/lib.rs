@@ -43,6 +43,11 @@ fn stop_mode(state: tauri::State<SharedState>) {
 }
 
 #[tauri::command]
+fn clear_logs(state: tauri::State<SharedState>) {
+    state.clear_logs();
+}
+
+#[tauri::command]
 fn set_remote_host(host: Option<String>, state: tauri::State<SharedState>) {
     state.set_remote_host(host);
 }
@@ -139,6 +144,7 @@ pub fn run() {
             app_status,
             start_mode,
             stop_mode,
+            clear_logs,
             set_remote_host,
             set_keyboard_target,
             set_theme,

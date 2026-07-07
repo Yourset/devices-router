@@ -37,7 +37,7 @@ const appRoot = app;
 let activeTab: Tab = "overview";
 let autoFollowLogs = true;
 let status: AppStatus = {
-  version: "0.1.10",
+  version: "0.1.11",
   mode: "idle",
   running: false,
   connected: false,
@@ -101,6 +101,11 @@ async function setStartOnLogin(enabled: boolean) {
 
 async function copyLogs() {
   await navigator.clipboard.writeText(status.logs.join(""));
+}
+
+async function clearLogs() {
+  await invoke("clear_logs");
+  await refreshStatus();
 }
 
 function downloadLogs() {
@@ -277,6 +282,7 @@ function renderLogs() {
         <h2>日志</h2>
         <div class="mini-actions">
           <button id="toggle-autolog">${autoFollowLogs ? "停止跟随" : "跟随最新"}</button>
+          <button id="clear-logs">清空日志</button>
           <button id="copy-logs">复制日志</button>
           <button id="download-logs">导出日志</button>
         </div>
@@ -303,6 +309,7 @@ function bindEvents() {
   document.querySelector("#theme-light")?.addEventListener("click", () => setTheme("light"));
   document.querySelector("#theme-soft")?.addEventListener("click", () => setTheme("soft"));
   document.querySelector("#copy-logs")?.addEventListener("click", copyLogs);
+  document.querySelector("#clear-logs")?.addEventListener("click", clearLogs);
   document.querySelector("#download-logs")?.addEventListener("click", downloadLogs);
   document.querySelector("#toggle-autolog")?.addEventListener("click", () => {
     autoFollowLogs = !autoFollowLogs;
