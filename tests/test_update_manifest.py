@@ -19,6 +19,7 @@ def test_parse_manifest_reads_versions_and_files():
     assert isinstance(manifest, UpdateManifest)
     assert manifest.file_for("remote").version == "0.5.0"
     assert manifest.file_for("remote").path == "FlowKeyboardRemote.exe"
+    assert manifest.file_for("remote").kind == "file"
     assert manifest.file_for("remote").size is None
     assert manifest.file_for("remote").sha256 is None
 
@@ -57,14 +58,13 @@ def test_parse_manifest_reads_integrity_fields():
     assert update_file.sha256 == "abc"
 
 
-def test_update_script_restarts_through_scheduled_task():
+def test_update_script_replaces_without_immediate_restart():
     script = build_update_script(
         123,
         Path(r"C:\tmp\FlowKeyboardRemote.exe.download"),
         Path(r"C:\tmp\FlowKeyboardRemote.exe"),
     )
 
-    assert "schtasks /Create" in script
-    assert "schtasks /Run" in script
-    assert "Start-Process -FilePath " in script
+    assert "schtasks /Create" not in script
+    assert "Start-Process" not in script
     assert "Move-Item -Force" in script

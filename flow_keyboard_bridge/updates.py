@@ -18,6 +18,7 @@ from .app_info import APP_VERSION, HOST_EXE_NAME, REMOTE_EXE_NAME, UPDATE_PORT
 class UpdateFile:
     version: str
     path: str
+    kind: str = "file"
     size: int | None = None
     sha256: str | None = None
 
@@ -46,6 +47,7 @@ def parse_manifest(payload: bytes) -> UpdateManifest:
         role: UpdateFile(
             version=str(info["version"]),
             path=str(info["path"]),
+            kind=str(info.get("kind", "file")),
             size=int(info["size"]) if "size" in info else None,
             sha256=str(info["sha256"]) if "sha256" in info else None,
         )
@@ -129,7 +131,7 @@ def check_remote_update(host: str, role: str = "remote", port: int = UPDATE_PORT
         print(f"[update] already current: {APP_VERSION}")
         return
 
-    target = Path(sys.executable).resolve()
+    target = update_target_path()
     download = target.with_suffix(target.suffix + ".download")
     url = f"{base_url}/{update_file.path}"
     print(f"[update] downloading {role}: {APP_VERSION} -> {update_file.version}")
@@ -147,6 +149,12 @@ def check_remote_update(host: str, role: str = "remote", port: int = UPDATE_PORT
             pass
         return
     apply_update_and_restart(download, target)
+
+
+def update_target_path() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve()
+    return Path(sys.argv[0]).resolve()
 
 
 def apply_update_and_restart(source: Path, target: Path) -> None:
@@ -177,23 +185,8 @@ def build_update_script(pid_to_wait: int, source: Path, target: Path) -> str:
             f"$source = {source_text}",
             f"$target = {target_text}",
             "Wait-Process -Id $pidToWait -ErrorAction SilentlyContinue",
-            "Start-Sleep -Milliseconds 800",
+            "Start-Sleep -Seconds 3",
             "Move-Item -Force -LiteralPath $source -Destination $target",
-            "$taskName = 'FlowKeyboardBridgeRestart-' + [guid]::NewGuid().ToString('N')",
-            "$restartScript = Join-Path $env:TEMP ($taskName + '.ps1')",
-            "$targetForScript = $target.Replace(\"'\", \"''\")",
-            "$restartContent = @(",
-            "    '$ErrorActionPreference = ''SilentlyContinue'''",
-            "    'Start-Sleep -Seconds 4'",
-            "    ('Start-Process -FilePath ''' + $targetForScript + '''')",
-            "    ('schtasks /Delete /TN ' + $taskName + ' /F | Out-Null')",
-            "    'Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force'",
-            ") -join [Environment]::NewLine",
-            "Set-Content -LiteralPath $restartScript -Value $restartContent -Encoding UTF8",
-            "$startTime = (Get-Date).AddMinutes(1).ToString('HH:mm')",
-            "$taskAction = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ' + '\"' + $restartScript + '\"'",
-            "schtasks /Create /TN $taskName /SC ONCE /ST $startTime /TR $taskAction /F | Out-Null",
-            "schtasks /Run /TN $taskName | Out-Null",
             "Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force",
         ]
     )
