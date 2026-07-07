@@ -42,21 +42,7 @@ try {
     New-Item -ItemType Directory -Force -Path $updatesDir | Out-Null
     Copy-Item -Force -LiteralPath (Join-Path $PSScriptRoot "dist\FlowKeyboardHost.exe") -Destination (Join-Path $updatesDir "FlowKeyboardHost.exe")
     Copy-Item -Force -LiteralPath (Join-Path $PSScriptRoot "dist\FlowKeyboardRemote.exe") -Destination (Join-Path $updatesDir "FlowKeyboardRemote.exe")
-    $version = (& .\.venv\Scripts\python -c "from flow_keyboard_bridge.app_info import APP_VERSION; print(APP_VERSION)").Trim()
-    $manifest = [ordered]@{
-        version = $version
-        files = [ordered]@{
-            host = [ordered]@{
-                version = $version
-                path = "FlowKeyboardHost.exe"
-            }
-            remote = [ordered]@{
-                version = $version
-                path = "FlowKeyboardRemote.exe"
-            }
-        }
-    }
-    $manifest | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 -LiteralPath (Join-Path $updatesDir "manifest.json")
+    .\.venv\Scripts\python -c "import json; from pathlib import Path; from flow_keyboard_bridge.updates import default_manifest; Path(r'$updatesDir\manifest.json').write_text(json.dumps(default_manifest(), indent=2), encoding='utf-8')"
 
     Write-Host "Built:"
     Write-Host "  $PSScriptRoot\dist\flow-keyboard-server.exe"

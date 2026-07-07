@@ -19,6 +19,14 @@ def test_parse_manifest_reads_versions_and_files():
     assert manifest.file_for("remote").path == "FlowKeyboardRemote.exe"
 
 
+def test_parse_manifest_accepts_utf8_bom():
+    manifest = parse_manifest(
+        b'\xef\xbb\xbf{"files":{"host":{"version":"0.5.0","path":"FlowKeyboardHost.exe"}}}'
+    )
+
+    assert manifest.file_for("host").version == "0.5.0"
+
+
 def test_same_version_does_not_need_update():
     manifest = parse_manifest(
         b'{"files":{"remote":{"version":"0.5.0","path":"FlowKeyboardRemote.exe"}}}'

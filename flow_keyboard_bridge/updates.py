@@ -31,7 +31,7 @@ class UpdateManifest:
 
 
 def parse_manifest(payload: bytes) -> UpdateManifest:
-    data = json.loads(payload.decode("utf-8"))
+    data = json.loads(payload.decode("utf-8-sig"))
     files = {
         role: UpdateFile(version=str(info["version"]), path=str(info["path"]))
         for role, info in data.get("files", {}).items()
