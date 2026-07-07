@@ -140,3 +140,5 @@ npm run build
 ## 项目定位
 
 这是一个个人实用工具，优先解决“已经有 Logitech Flow 鼠标跨屏，但没有 Logitech 键盘”的场景。它不破解 Flow，不模拟 Logitech 设备，只做一个独立的键盘桥。
+
+更真实的起点是：vibe coding 时想把另一台电脑当开发机用，同时这台主电脑还能打 LOL 或处理自己的窗口。鼠标能靠 Flow 过去，键盘却跟不过去，于是才有了这个小工具。详见 [项目动机](docs/motivation.zh.md)。

@@ -3,6 +3,7 @@
 ## 中文
 
 - [使用教程](user-guide.zh.md)
+- [项目动机](motivation.zh.md)
 - [排障手册](troubleshooting.zh.md)
 - [视频脚本提纲](video-outline.zh.md)
 - [开发故事线](development-story.md)
@@ -13,6 +14,7 @@
 ## English
 
 - [User Guide](user-guide.en.md)
+- [Motivation](motivation.en.md)
 - [Troubleshooting](troubleshooting.en.md)
 - [Video Outline](video-outline.en.md)
 

@@ -138,3 +138,5 @@ A browser page cannot inject system-level keyboard input into other Windows appl
 ## Project Positioning
 
 This is a practical personal utility for people who already use Logitech Flow for mouse movement but do not own a Logitech keyboard. It does not crack Flow or emulate Logitech devices; it works as an independent keyboard bridge.
+
+The more honest origin story: I wanted to vibe code on another PC while keeping the main PC available for League of Legends or other windows. Flow moved the mouse, but the keyboard did not follow. See [Motivation](docs/motivation.en.md).

@@ -10,6 +10,8 @@
 
 Logitech Flow moves the mouse between computers, but a normal keyboard does not follow. Devices Router keeps Flow in charge of the mouse and adds a separate keyboard bridge.
 
+The more honest motivation: I wanted to vibe code on another PC while keeping the main PC free for League of Legends or other windows. The mouse could move there, but the keyboard could not.
+
 ## Structure
 
 ### 1. Opening: The Problem
@@ -18,11 +20,14 @@ Visuals:
 
 - Move the mouse from the host PC to the remote PC.
 - Type on a normal keyboard and show that text still goes to the host.
+- Keep the host PC available for a game or everyday windows while the remote PC shows the development workspace.
 
 Voiceover:
 
 ```text
 Logitech Flow is great, but keyboard following is tied to the Logitech ecosystem. I did not want to buy another keyboard just for that, so I built a sidecar utility: Flow keeps the mouse, and my tool forwards the keyboard.
+
+The real-life version is: I wanted to vibe code on one machine while the main PC could still run League or whatever else was open. The mouse moved across, the keyboard did not, and that was annoying enough to build a tool.
 ```
 
 ### 2. Minimal Goal
