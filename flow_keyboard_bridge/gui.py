@@ -41,7 +41,7 @@ class BridgeWindow:
 
         self.log = ScrolledText(self.root, height=18, font=("Consolas", 10))
         self.log.pack(fill="both", expand=True, padx=12, pady=(0, 12))
-        self.log.insert("end", "Starting...\n")
+        self.log.insert("end", "正在启动...\n")
         self.log.configure(state="disabled")
 
         sys.stdout = QueueWriter(self.output_queue)
@@ -71,4 +71,3 @@ class BridgeWindow:
 
     def run(self) -> None:
         self.root.mainloop()
-

@@ -182,6 +182,6 @@ def discover_server_auto(port: int, broadcast_timeout: float) -> DiscoveryInfo:
     try:
         return discover_server(broadcast_timeout)
     except TimeoutError as broadcast_error:
-        print(f"[client] broadcast discovery failed: {broadcast_error}")
-        print("[client] scanning local network ...")
+        print(f"[客户端] 广播寻找失败：{broadcast_error}")
+        print("[客户端] 正在扫描本地网络 ...")
         return discover_server_by_scan(port)

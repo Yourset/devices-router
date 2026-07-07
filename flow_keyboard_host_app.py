@@ -1,17 +1,22 @@
 from flow_keyboard_bridge.gui import BridgeWindow
 from flow_keyboard_bridge.server import run_server
 from flow_keyboard_bridge.firewall import ensure_update_firewall_rule
+from flow_keyboard_bridge.app_info import APP_VERSION
 from flow_keyboard_bridge.updates import check_local_self_update, start_update_server
 
 
-def main() -> None:
+def run_host() -> None:
     check_local_self_update("host")
     ensure_update_firewall_rule()
     start_update_server()
+    run_server("0.0.0.0", 8765)
+
+
+def main() -> None:
     app = BridgeWindow(
-        "Flow Keyboard Bridge - Host",
-        "主电脑模式：保持这个窗口打开。Ctrl+Alt+2 转发到副电脑，Ctrl+Alt+1 回到本机。",
-        lambda: run_server("0.0.0.0", 8765),
+        f"键盘跟随工具 - 主电脑 v{APP_VERSION}",
+        "主电脑模式：保持窗口打开。鼠标到副电脑时键盘跟过去，鼠标回来时键盘回本机。",
+        run_host,
     )
     app.run()
 

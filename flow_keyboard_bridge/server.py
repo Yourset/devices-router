@@ -37,13 +37,13 @@ class KeyboardBridgeServer:
         mouse_thread = threading.Thread(target=self._host_mouse_poll_loop, daemon=True)
         mouse_thread.start()
 
-        print("[server] hotkeys:")
-        print("  Ctrl+Alt+1 -> keyboard local")
-        print("  Ctrl+Alt+2 -> keyboard remote")
-        print("  Ctrl+Alt+Esc -> exit")
-        print("  Mouse move on host -> keyboard local")
-        print("  Mouse move on remote -> keyboard remote")
-        print("[server] waiting for client while keyboard listener runs...")
+        print("[主电脑] 快捷键：")
+        print("  Ctrl+Alt+1 -> 键盘回到主电脑")
+        print("  Ctrl+Alt+2 -> 键盘转到副电脑")
+        print("  Ctrl+Alt+Esc -> 退出")
+        print("  主电脑鼠标移动 -> 键盘回到主电脑")
+        print("  副电脑鼠标移动 -> 键盘转到副电脑")
+        print("[主电脑] 正在等待副电脑连接，键盘监听已启动...")
 
         try:
             run_keyboard_hook(self._handle_raw_keyboard_event)
@@ -55,7 +55,7 @@ class KeyboardBridgeServer:
             server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             server.bind((self.bind_host, self.port))
             server.listen(1)
-            print(f"[server] listening on {self.bind_host}:{self.port}")
+            print(f"[主电脑] 正在监听 {self.bind_host}:{self.port}")
             while True:
                 client, address = server.accept()
                 client.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
@@ -64,7 +64,7 @@ class KeyboardBridgeServer:
                         self.client.close()
                     self.client = client
                     self.client.sendall(encode_message(PingEvent()))
-                print(f"[server] client connected: {address[0]}:{address[1]}")
+                print(f"[主电脑] 副电脑已连接：{address[0]}:{address[1]}")
                 reader = threading.Thread(target=self._read_client_events, args=(client,), daemon=True)
                 reader.start()
 
@@ -74,7 +74,7 @@ class KeyboardBridgeServer:
             try:
                 event = decode_message(line)
             except Exception as exc:
-                print(f"[server] ignored client message: {exc}")
+                print(f"[主电脑] 已忽略无法处理的副电脑消息：{exc}")
                 continue
             if isinstance(event, MouseActivityEvent) and event.source == "remote":
                 self._enable_remote_from_mouse()
@@ -84,7 +84,7 @@ class KeyboardBridgeServer:
         self.state.remote_enabled = self.router.remote_enabled
 
         if self.router.stop_requested:
-            print("[server] exiting")
+            print("[主电脑] 正在退出")
             return "stop"
 
         if self.router.remote_enabled:
@@ -101,19 +101,19 @@ class KeyboardBridgeServer:
             try:
                 self.client.sendall(payload)
             except OSError as exc:
-                print(f"[server] client disconnected: {exc}")
+                print(f"[主电脑] 副电脑已断开：{exc}")
                 self.client.close()
                 self.client = None
 
     def enable_local(self) -> None:
         self.state.enable_local()
         self.router.remote_enabled = False
-        print("[server] target: local")
+        print("[主电脑] 键盘当前在：主电脑")
 
     def enable_remote(self) -> None:
         self.state.enable_remote()
         self.router.remote_enabled = True
-        print("[server] target: remote")
+        print("[主电脑] 键盘当前在：副电脑")
 
     def _enable_remote_from_mouse(self) -> None:
         now = time.monotonic()
@@ -144,7 +144,7 @@ class KeyboardBridgeServer:
                 self.enable_local()
 
     def stop(self) -> None:
-        print("[server] exiting")
+        print("[主电脑] 正在退出")
         raise SystemExit(0)
 
 

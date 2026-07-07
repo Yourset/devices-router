@@ -14,10 +14,10 @@ from .win_input import send_key_event
 
 
 def run_client_once(host: str, port: int) -> None:
-    print(f"[client] connecting to {host}:{port} ...")
+    print(f"[客户端] 正在连接主电脑 {host}:{port} ...")
     with socket.create_connection((host, port), timeout=5) as sock:
         sock.settimeout(None)
-        print("[client] connected. Focus the target app here, then switch on server with Ctrl+Alt+2.")
+        print("[客户端] 已连接。请在副电脑打开目标输入框，键盘会跟随鼠标切换。")
         check_remote_update(host, "remote")
         mouse_stop = threading.Event()
         mouse_thread = threading.Thread(target=_send_mouse_activity, args=(sock, mouse_stop), daemon=True)
@@ -28,14 +28,14 @@ def run_client_once(host: str, port: int) -> None:
                 try:
                     event = decode_message(line)
                     if isinstance(event, PingEvent):
-                        print("[client] server handshake ok")
+                        print("[客户端] 主电脑握手成功")
                     elif isinstance(event, KeyEvent):
                         send_key_event(event.key, event.action == "down")
                 except Exception as exc:
-                    print(f"[client] ignored message: {exc}")
+                    print(f"[客户端] 已忽略无法处理的消息：{exc}")
         finally:
             mouse_stop.set()
-    print("[client] server closed the connection")
+    print("[客户端] 主电脑连接已关闭")
 
 
 def _send_mouse_activity(sock: socket.socket, stop_event: threading.Event) -> None:
@@ -68,19 +68,19 @@ def run_client(host: str | None, port: int, reconnect: bool, discovery_timeout: 
         target_port = port
         try:
             if target_host is None:
-                print(f"[client] searching for server for {discovery_timeout:g} seconds ...")
+                print(f"[客户端] 正在自动寻找主电脑，最多等待 {discovery_timeout:g} 秒 ...")
                 info = discover_server_auto(port, discovery_timeout)
                 target_host = info.host
                 target_port = info.port
-                print(f"[client] discovered server at {target_host}:{target_port}")
+                print(f"[客户端] 找到主电脑：{target_host}:{target_port}")
             run_client_once(target_host, target_port)
         except OSError as exc:
-            print(f"[client] connection failed: {exc}")
+            print(f"[客户端] 连接失败：{exc}")
         except TimeoutError as exc:
-            print(f"[client] discovery failed: {exc}")
+            print(f"[客户端] 自动寻找失败：{exc}")
         if not reconnect:
             return
-        print("[client] retrying in 3 seconds. Press Ctrl+C to stop.")
+        print("[客户端] 3 秒后自动重试。关闭窗口即可停止。")
         time.sleep(3)
 
 
@@ -94,7 +94,7 @@ def main() -> None:
     try:
         run_client(args.host, args.port, not args.no_reconnect, args.discovery_timeout)
     except KeyboardInterrupt:
-        print("\n[client] stopped")
+        print("\n[客户端] 已停止")
 
 
 if __name__ == "__main__":
