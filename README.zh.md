@@ -4,7 +4,7 @@
 
 Logitech Flow 继续负责鼠标跨电脑移动，Devices Router 负责把主电脑的键盘输入转发到副电脑。目标是尽量无脑：两台电脑都打开软件，鼠标在哪边动，键盘就跟到哪边。
 
-语言切换：[English README](README.en.md) / [语言入口](README.md)
+语言 / Language: **简体中文** | [English](README.en.md)
 
 ## 当前状态
 

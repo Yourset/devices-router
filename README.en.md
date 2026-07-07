@@ -4,7 +4,7 @@ A small Windows utility that adds keyboard following to Logitech Flow setups.
 
 Logitech Flow keeps handling cross-computer mouse movement. Devices Router forwards keyboard input from the host PC to the remote PC. The intended experience is simple: start the app on both machines, move the mouse to a machine, and the keyboard follows.
 
-Chinese documentation: [README.zh.md](README.zh.md)
+Language / 语言: [简体中文](README.md) | **English**
 
 ## Current Status
 
