@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -17,9 +18,18 @@ from .app_info import APP_VERSION, HOST_EXE_NAME, REMOTE_EXE_NAME, UPDATE_PORT
 class UpdateFile:
     version: str
     path: str
+    size: int | None = None
+    sha256: str | None = None
 
     def needs_update(self, current_version: str) -> bool:
         return self.version != current_version
+
+    def verify(self, file_path: Path) -> tuple[bool, str]:
+        if self.size is not None and file_path.stat().st_size != self.size:
+            return False, f"size mismatch: expected {self.size}, got {file_path.stat().st_size}"
+        if self.sha256 is not None and _sha256(file_path) != self.sha256:
+            return False, "sha256 mismatch"
+        return True, "ok"
 
 
 @dataclass(frozen=True)
@@ -33,7 +43,12 @@ class UpdateManifest:
 def parse_manifest(payload: bytes) -> UpdateManifest:
     data = json.loads(payload.decode("utf-8-sig"))
     files = {
-        role: UpdateFile(version=str(info["version"]), path=str(info["path"]))
+        role: UpdateFile(
+            version=str(info["version"]),
+            path=str(info["path"]),
+            size=int(info["size"]) if "size" in info else None,
+            sha256=str(info["sha256"]) if "sha256" in info else None,
+        )
         for role, info in data.get("files", {}).items()
     }
     return UpdateManifest(files=files)
@@ -57,7 +72,7 @@ def start_update_server(port: int = UPDATE_PORT) -> threading.Thread | None:
     root = updates_dir()
     manifest = root / "manifest.json"
     if not manifest.exists():
-        print(f"[更新] 未找到本地更新清单：{manifest}")
+        print(f"[update] local manifest missing: {manifest}")
         return None
 
     class Handler(SimpleHTTPRequestHandler):
@@ -65,15 +80,15 @@ def start_update_server(port: int = UPDATE_PORT) -> threading.Thread | None:
             super().__init__(*args, directory=str(root), **kwargs)
 
         def log_message(self, format, *args):
-            print("[更新] " + format % args)
+            print("[update] " + format % args)
 
     def serve() -> None:
         try:
             with ThreadingHTTPServer(("0.0.0.0", port), Handler) as server:
-                print(f"[更新] 更新服务已启动：0.0.0.0:{port}")
+                print(f"[update] serving on 0.0.0.0:{port}")
                 server.serve_forever()
         except OSError as exc:
-            print(f"[更新] 更新服务不可用：{exc}")
+            print(f"[update] server unavailable: {exc}")
 
     thread = threading.Thread(target=serve, daemon=True)
     thread.start()
@@ -90,9 +105,13 @@ def check_local_self_update(role: str) -> None:
         return
     source = updates_dir() / update_file.path
     if not source.exists():
-        print(f"[更新] 本地更新文件不存在：{source}")
+        print(f"[update] local file missing: {source}")
         return
-    print(f"[更新] 发现本机 {role} 新版本：{APP_VERSION} -> {update_file.version}")
+    ok, reason = update_file.verify(source)
+    if not ok:
+        print(f"[update] local file verification failed: {reason}")
+        return
+    print(f"[update] local {role} update found: {APP_VERSION} -> {update_file.version}")
     apply_update_and_restart(source, Path(sys.executable).resolve())
 
 
@@ -102,22 +121,30 @@ def check_remote_update(host: str, role: str = "remote", port: int = UPDATE_PORT
         with urllib.request.urlopen(f"{base_url}/manifest.json", timeout=3) as response:
             manifest = parse_manifest(response.read())
     except Exception as exc:
-        print(f"[更新] 暂未完成远程更新检查：{exc}")
+        print(f"[update] remote check skipped: {exc}")
         return
 
     update_file = manifest.file_for(role)
     if not update_file.needs_update(APP_VERSION):
-        print(f"[更新] 已是最新版本：{APP_VERSION}")
+        print(f"[update] already current: {APP_VERSION}")
         return
 
     target = Path(sys.executable).resolve()
     download = target.with_suffix(target.suffix + ".download")
     url = f"{base_url}/{update_file.path}"
-    print(f"[更新] 正在下载 {role} 新版本：{APP_VERSION} -> {update_file.version}")
+    print(f"[update] downloading {role}: {APP_VERSION} -> {update_file.version}")
     try:
         urllib.request.urlretrieve(url, download)
     except Exception as exc:
-        print(f"[更新] 下载失败：{exc}")
+        print(f"[update] download failed: {exc}")
+        return
+    ok, reason = update_file.verify(download)
+    if not ok:
+        print(f"[update] downloaded file verification failed: {reason}")
+        try:
+            download.unlink()
+        except OSError:
+            pass
         return
     apply_update_and_restart(download, target)
 
@@ -140,7 +167,7 @@ def apply_update_and_restart(source: Path, target: Path) -> None:
         ),
         encoding="utf-8",
     )
-    print("[更新] 正在应用更新并自动重启...")
+    print("[update] applying update and restarting...")
     subprocess.Popen(
         [
             "powershell",
@@ -159,7 +186,36 @@ def default_manifest() -> dict:
     return {
         "version": APP_VERSION,
         "files": {
-            "host": {"version": APP_VERSION, "path": HOST_EXE_NAME},
-            "remote": {"version": APP_VERSION, "path": REMOTE_EXE_NAME},
+            "host": _manifest_file(HOST_EXE_NAME),
+            "remote": _manifest_file(REMOTE_EXE_NAME),
         },
     }
+
+
+def _manifest_file(exe_name: str) -> dict:
+    info = {"version": APP_VERSION, "path": exe_name}
+    exe_path = _find_built_exe(exe_name)
+    if exe_path.exists():
+        info["size"] = exe_path.stat().st_size
+        info["sha256"] = _sha256(exe_path)
+    return info
+
+
+def _find_built_exe(exe_name: str) -> Path:
+    candidates = [
+        app_dir() / exe_name,
+        Path.cwd() / "dist" / exe_name,
+        Path.cwd() / exe_name,
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
