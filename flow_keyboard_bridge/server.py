@@ -21,7 +21,8 @@ class KeyboardBridgeServer:
         self.router = KeyboardRouter()
         self.client: socket.socket | None = None
         self.lock = threading.Lock()
-        self.last_mouse_switch_at = 0.0
+        self.last_host_mouse_at = 0.0
+        self.last_remote_mouse_at = 0.0
 
     def serve(self) -> None:
         discovery_stop = threading.Event()
@@ -116,9 +117,10 @@ class KeyboardBridgeServer:
 
     def _enable_remote_from_mouse(self) -> None:
         now = time.monotonic()
-        if now - self.last_mouse_switch_at < 0.5:
+        self.last_remote_mouse_at = now
+        # Host mouse activity wins because it is the user's escape path back to local.
+        if now - self.last_host_mouse_at < 0.8:
             return
-        self.last_mouse_switch_at = now
         if not self.router.remote_enabled:
             self.enable_remote()
 
@@ -128,7 +130,7 @@ class KeyboardBridgeServer:
         except OSError:
             return
         while True:
-            time.sleep(0.12)
+            time.sleep(0.05)
             try:
                 current_pos = get_cursor_pos()
             except OSError:
@@ -137,9 +139,7 @@ class KeyboardBridgeServer:
                 continue
             last_pos = current_pos
             now = time.monotonic()
-            if now - self.last_mouse_switch_at < 0.25:
-                continue
-            self.last_mouse_switch_at = now
+            self.last_host_mouse_at = now
             if self.router.remote_enabled:
                 self.enable_local()
 
