@@ -59,7 +59,21 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
-            app.manage(SharedState::new(env!("CARGO_PKG_VERSION")));
+            let state = SharedState::new(env!("CARGO_PKG_VERSION"));
+            let autostart = std::env::args().find_map(|arg| match arg.as_str() {
+                "--host" => Some(AppMode::Host),
+                "--remote" => Some(AppMode::Remote),
+                _ => None,
+            });
+            app.manage(state.clone());
+            if let Some(mode) = autostart {
+                let runtime = state.runtime();
+                std::thread::spawn(move || {
+                    if let Err(err) = crate::core::start_mode(mode, runtime.clone()) {
+                        runtime.log(format!("[应用] 自动启动失败：{err:#}\n"));
+                    }
+                });
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

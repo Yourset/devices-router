@@ -34,7 +34,7 @@ const appRoot = app;
 let activeTab: Tab = "overview";
 let autoFollowLogs = true;
 let status: AppStatus = {
-  version: "0.1.4",
+  version: "0.1.5",
   mode: "idle",
   running: false,
   connected: false,
