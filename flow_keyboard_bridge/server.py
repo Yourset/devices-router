@@ -3,13 +3,15 @@ from __future__ import annotations
 import argparse
 import socket
 import threading
+import time
 
-from pynput import keyboard
+from pynput import mouse
 
 from .discovery import broadcast_server
-from .keynames import normalize_key_name
-from .protocol import KeyEvent, PingEvent, encode_message
+from .keyboard_router import KeyboardRouter, RawKeyEvent
+from .protocol import KeyEvent, MouseActivityEvent, PingEvent, decode_message, encode_message
 from .target_state import TargetState
+from .win_keyboard_hook import run_keyboard_hook
 
 
 class KeyboardBridgeServer:
@@ -17,8 +19,10 @@ class KeyboardBridgeServer:
         self.bind_host = bind_host
         self.port = port
         self.state = TargetState()
+        self.router = KeyboardRouter()
         self.client: socket.socket | None = None
         self.lock = threading.Lock()
+        self.last_mouse_switch_at = 0.0
 
     def serve(self) -> None:
         discovery_stop = threading.Event()
@@ -30,16 +34,20 @@ class KeyboardBridgeServer:
         discovery_thread.start()
         accept_thread = threading.Thread(target=self._accept_loop, daemon=True)
         accept_thread.start()
+        mouse_thread = mouse.Listener(on_move=self._on_host_mouse_move)
+        mouse_thread.daemon = True
+        mouse_thread.start()
 
         print("[server] hotkeys:")
         print("  Ctrl+Alt+1 -> keyboard local")
         print("  Ctrl+Alt+2 -> keyboard remote")
         print("  Ctrl+Alt+Esc -> exit")
+        print("  Mouse move on host -> keyboard local")
+        print("  Mouse move on remote -> keyboard remote")
         print("[server] waiting for client while keyboard listener runs...")
 
         try:
-            with keyboard.Listener(on_press=self._on_press, on_release=self._on_release) as listener:
-                listener.join()
+            run_keyboard_hook(self._handle_raw_keyboard_event)
         finally:
             discovery_stop.set()
 
@@ -58,25 +66,35 @@ class KeyboardBridgeServer:
                     self.client = client
                     self.client.sendall(encode_message(PingEvent()))
                 print(f"[server] client connected: {address[0]}:{address[1]}")
+                reader = threading.Thread(target=self._read_client_events, args=(client,), daemon=True)
+                reader.start()
 
-    def _on_press(self, key: keyboard.Key | keyboard.KeyCode) -> bool | None:
-        if self._is_hotkey(key):
-            return True
-        self._send_if_remote("down", key)
-        return True
+    def _read_client_events(self, client: socket.socket) -> None:
+        stream = client.makefile("rb")
+        for line in stream:
+            try:
+                event = decode_message(line)
+            except Exception as exc:
+                print(f"[server] ignored client message: {exc}")
+                continue
+            if isinstance(event, MouseActivityEvent) and event.source == "remote":
+                self._enable_remote_from_mouse()
 
-    def _on_release(self, key: keyboard.Key | keyboard.KeyCode) -> bool | None:
-        self._send_if_remote("up", key)
-        return True
+    def _handle_raw_keyboard_event(self, action: str, vk_code: int, scan_code: int) -> bool:
+        suppress = self.router.handle(RawKeyEvent(action, vk_code))
+        self.state.remote_enabled = self.router.remote_enabled
 
-    def _is_hotkey(self, key: keyboard.Key | keyboard.KeyCode) -> bool:
-        # GlobalHotKeys handles target switching; listener still sees those keys.
-        return False
+        if self.router.stop_requested:
+            print("[server] exiting")
+            return "stop"
 
-    def _send_if_remote(self, action: str, key: keyboard.Key | keyboard.KeyCode) -> None:
+        if self.router.remote_enabled:
+            self._send_if_remote(action, f"<{vk_code}>")
+        return suppress
+
+    def _send_if_remote(self, action: str, key_name: str) -> None:
         if not self.state.remote_enabled:
             return
-        key_name = normalize_key_name(str(key))
         payload = encode_message(KeyEvent(action=action, key=key_name))
         with self.lock:
             if self.client is None:
@@ -90,11 +108,29 @@ class KeyboardBridgeServer:
 
     def enable_local(self) -> None:
         self.state.enable_local()
+        self.router.remote_enabled = False
         print("[server] target: local")
 
     def enable_remote(self) -> None:
         self.state.enable_remote()
+        self.router.remote_enabled = True
         print("[server] target: remote")
+
+    def _enable_remote_from_mouse(self) -> None:
+        now = time.monotonic()
+        if now - self.last_mouse_switch_at < 0.5:
+            return
+        self.last_mouse_switch_at = now
+        if not self.router.remote_enabled:
+            self.enable_remote()
+
+    def _on_host_mouse_move(self, x, y) -> None:
+        now = time.monotonic()
+        if now - self.last_mouse_switch_at < 0.5:
+            return
+        self.last_mouse_switch_at = now
+        if self.router.remote_enabled:
+            self.enable_local()
 
     def stop(self) -> None:
         print("[server] exiting")
@@ -103,14 +139,6 @@ class KeyboardBridgeServer:
 
 def run_server(bind_host: str, port: int) -> None:
     bridge = KeyboardBridgeServer(bind_host, port)
-    hotkeys = keyboard.GlobalHotKeys(
-        {
-            "<ctrl>+<alt>+1": bridge.enable_local,
-            "<ctrl>+<alt>+2": bridge.enable_remote,
-            "<ctrl>+<alt>+<esc>": bridge.stop,
-        }
-    )
-    hotkeys.start()
     bridge.serve()
 
 

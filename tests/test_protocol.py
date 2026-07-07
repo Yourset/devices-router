@@ -1,6 +1,12 @@
 import json
 
-from flow_keyboard_bridge.protocol import KeyEvent, PingEvent, decode_message, encode_message
+from flow_keyboard_bridge.protocol import (
+    KeyEvent,
+    MouseActivityEvent,
+    PingEvent,
+    decode_message,
+    encode_message,
+)
 
 
 def test_key_event_round_trips_through_json_line():
@@ -25,6 +31,15 @@ def test_decode_rejects_unknown_action():
 
 def test_ping_event_round_trips_through_json_line():
     event = PingEvent()
+
+    payload = encode_message(event)
+
+    assert payload.endswith(b"\n")
+    assert decode_message(payload) == event
+
+
+def test_mouse_activity_event_round_trips_through_json_line():
+    event = MouseActivityEvent(source="remote")
 
     payload = encode_message(event)
 
