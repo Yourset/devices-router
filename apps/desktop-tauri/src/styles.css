@@ -28,6 +28,11 @@ button:hover {
   background: #edf3fb;
 }
 
+button:disabled {
+  opacity: 0.68;
+  cursor: progress;
+}
+
 input {
   border: 1px solid #b8c4d6;
   border-radius: 6px;
@@ -173,13 +178,14 @@ h2 {
   border-radius: 0 6px 6px 0;
 }
 
-.segmented .selected,
-#target-remote,
-#start-host,
-#start-remote {
+button.selected {
   background: #2563eb;
   border-color: #2563eb;
   color: #ffffff;
+}
+
+button.selected:hover {
+  background: #1d4ed8;
 }
 
 .inline-form {
@@ -204,8 +210,15 @@ dl div,
   margin-bottom: 12px;
 }
 
+.settings-block {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
 dt,
-.settings-row span {
+.settings-row span,
+.settings-block span {
   color: #5a6678;
 }
 

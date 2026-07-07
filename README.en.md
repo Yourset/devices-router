@@ -10,7 +10,7 @@ Language / 语言: [简体中文](README.md) | **English**
 
 - Platform: Windows -> Windows
 - Main implementation: Tauri/Rust desktop app in `apps/desktop-tauri/`
-- Current version: `v0.1.12`
+- Current version: `v0.1.13`
 - For normal users: install the `.exe` setup package. Node.js, Rust, Python, and other development dependencies are not required.
 - Ports:
   - TCP `8765`: keyboard events, control messages, heartbeat

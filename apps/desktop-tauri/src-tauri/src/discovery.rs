@@ -177,6 +177,10 @@ fn local_ipv4_candidates() -> Vec<Ipv4Addr> {
     candidates
 }
 
+pub fn local_ipv4_addresses() -> Vec<Ipv4Addr> {
+    local_ipv4_candidates()
+}
+
 fn push_candidate(candidates: &mut Vec<Ipv4Addr>, ip: Ipv4Addr) {
     if !is_ignored_ipv4(IpAddr::V4(ip)) && !candidates.contains(&ip) {
         candidates.push(ip);

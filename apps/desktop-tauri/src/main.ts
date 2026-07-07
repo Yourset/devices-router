@@ -1,23 +1,34 @@
 import { invoke } from "@tauri-apps/api/core";
 import "./styles.css";
 
-type Tab = "overview" | "mouse" | "network" | "update";
+type Tab = "overview" | "mouse" | "network" | "update" | "settings";
+type AppMode = "idle" | "host" | "remote";
+type KeyboardTarget = "local" | "remote";
+type Theme = "light" | "soft";
+type MouseSensitivity = "stable" | "balanced" | "sensitive";
+type StartupMode = "last" | "host" | "remote" | "idle";
 
 type AppStatus = {
   version: string;
-  mode: "idle" | "host" | "remote";
+  mode: AppMode;
   running: boolean;
   connected: boolean;
-  target: "local" | "remote";
+  target: KeyboardTarget;
   logs: string[];
   config: {
     tcpPort: number;
     discoveryPort: number;
     updatePort: number;
     remoteHost: string | null;
+    startupMode: StartupMode;
     lastMode: string;
+    restoreLastMode: boolean;
     startOnLogin: boolean;
-    theme: "light" | "soft";
+    minimizeToTray: boolean;
+    autoDiscovery: boolean;
+    gameMode: boolean;
+    theme: Theme;
+    mouseSensitivity: MouseSensitivity;
     mouseFollow: {
       enabled: boolean;
       hostMouseReturnsLocal: boolean;
@@ -30,14 +41,32 @@ type AppStatus = {
   };
 };
 
+type NetworkDiagnostics = {
+  localIps: string[];
+  tcpPort: number;
+  discoveryPort: number;
+  updatePort: number;
+  configuredHost: string | null;
+  autoDiscovery: boolean;
+  runningMode: AppMode;
+  connected: boolean;
+  keyboardTarget: KeyboardTarget;
+  targetHost: string | null;
+  tcpReachable: boolean | null;
+  updateReachable: boolean | null;
+};
+
 const app = document.querySelector<HTMLDivElement>("#app");
 if (!app) throw new Error("Missing app root");
 const appRoot = app;
 
 let activeTab: Tab = "overview";
 let autoFollowLogs = true;
+let pendingAction: string | null = null;
+let diagnostics: NetworkDiagnostics | null = null;
+
 let status: AppStatus = {
-  version: "0.1.12",
+  version: "0.1.13",
   mode: "idle",
   running: false,
   connected: false,
@@ -48,9 +77,15 @@ let status: AppStatus = {
     discoveryPort: 8766,
     updatePort: 8767,
     remoteHost: null,
+    startupMode: "last",
     lastMode: "idle",
+    restoreLastMode: true,
     startOnLogin: false,
+    minimizeToTray: false,
+    autoDiscovery: true,
+    gameMode: false,
     theme: "light",
+    mouseSensitivity: "balanced",
     mouseFollow: {
       enabled: true,
       hostMouseReturnsLocal: true,
@@ -68,44 +103,87 @@ async function refreshStatus() {
   render();
 }
 
+async function runAction(name: string, action: () => Promise<unknown>) {
+  pendingAction = name;
+  render();
+  try {
+    await action();
+    await refreshStatus();
+  } finally {
+    pendingAction = null;
+    render();
+  }
+}
+
 async function startMode(mode: "host" | "remote") {
-  await invoke("start_mode", { mode });
-  await refreshStatus();
+  await runAction(`start-${mode}`, () => invoke("start_mode", { mode }));
 }
 
 async function stopMode() {
-  await invoke("stop_mode");
-  await refreshStatus();
+  await runAction("stop", () => invoke("stop_mode"));
 }
 
 async function saveRemoteHost() {
   const input = document.querySelector<HTMLInputElement>("#remote-host");
-  await invoke("set_remote_host", { host: input?.value || null });
-  await refreshStatus();
+  await runAction("save-host", () => invoke("set_remote_host", { host: input?.value || null }));
+  await refreshDiagnostics();
 }
 
-async function setKeyboardTarget(target: "local" | "remote") {
-  await invoke("set_keyboard_target", { target });
-  await refreshStatus();
+async function setKeyboardTarget(target: KeyboardTarget) {
+  await runAction(`target-${target}`, () => invoke("set_keyboard_target", { target }));
 }
 
-async function setTheme(theme: "light" | "soft") {
-  await invoke("set_theme", { theme });
-  await refreshStatus();
+async function setTheme(theme: Theme) {
+  await runAction(`theme-${theme}`, () => invoke("set_theme", { theme }));
 }
 
 async function setStartOnLogin(enabled: boolean) {
-  await invoke("set_start_on_login", { enabled });
-  await refreshStatus();
+  await runAction("start-login", () => invoke("set_start_on_login", { enabled }));
+}
+
+async function setRestoreLastMode(enabled: boolean) {
+  await runAction("restore-last-mode", () => invoke("set_restore_last_mode", { enabled }));
+}
+
+async function setStartupMode(mode: StartupMode) {
+  await runAction(`startup-${mode}`, () => invoke("set_startup_mode", { mode }));
+}
+
+async function setMinimizeOnStart(enabled: boolean) {
+  await runAction("minimize-on-start", () => invoke("set_minimize_to_tray", { enabled }));
+}
+
+async function setAutoDiscovery(enabled: boolean) {
+  await runAction("auto-discovery", () => invoke("set_auto_discovery", { enabled }));
+  await refreshDiagnostics();
+}
+
+async function setGameMode(enabled: boolean) {
+  await runAction("game-mode", () => invoke("set_game_mode", { enabled }));
+}
+
+async function setMouseSensitivity(preset: MouseSensitivity) {
+  await runAction(`mouse-${preset}`, () => invoke("set_mouse_sensitivity", { preset }));
+}
+
+async function refreshDiagnostics() {
+  diagnostics = await invoke<NetworkDiagnostics>("network_diagnostics");
+  render();
 }
 
 async function copyLogs() {
-  await navigator.clipboard.writeText(status.logs.join(""));
+  const payload = status.logs.join("");
+  try {
+    await navigator.clipboard.writeText(payload);
+  } catch {
+    const log = document.querySelector<HTMLTextAreaElement>("#log-text");
+    log?.select();
+    document.execCommand("copy");
+  }
 }
 
 async function clearLogs() {
-  await invoke("clear_logs");
-  await refreshStatus();
+  await runAction("clear-logs", () => invoke("clear_logs"));
 }
 
 function downloadLogs() {
@@ -131,6 +209,7 @@ function render() {
         ${navButton("mouse", "鼠标跟随")}
         ${navButton("network", "网络诊断")}
         ${navButton("update", "更新")}
+        ${navButton("settings", "设置")}
       </aside>
       <section class="content">
         <header class="topbar">
@@ -149,11 +228,7 @@ function render() {
   bindEvents();
   const newLog = document.querySelector<HTMLTextAreaElement>("#log-text");
   if (newLog) {
-    if (autoFollowLogs && wasAtBottom) {
-      newLog.scrollTop = newLog.scrollHeight;
-    } else {
-      newLog.scrollTop = oldScrollTop;
-    }
+    newLog.scrollTop = autoFollowLogs && wasAtBottom ? newLog.scrollHeight : oldScrollTop;
   }
 }
 
@@ -165,6 +240,7 @@ function renderTab() {
   if (activeTab === "mouse") return renderMouseTab();
   if (activeTab === "network") return renderNetworkTab();
   if (activeTab === "update") return renderUpdateTab();
+  if (activeTab === "settings") return renderSettingsTab();
   return renderOverviewTab();
 }
 
@@ -174,24 +250,24 @@ function renderOverviewTab() {
       <article class="panel">
         <h2>运行模式</h2>
         <div class="actions">
-          <button id="start-host">主电脑模式</button>
-          <button id="start-remote">副电脑模式</button>
-          <button id="stop">停止</button>
+          ${actionButton("start-host", "主电脑模式", status.mode === "host")}
+          ${actionButton("start-remote", "副电脑模式", status.mode === "remote")}
+          ${actionButton("stop", "停止", status.mode === "idle")}
         </div>
       </article>
       <article class="panel">
         <h2>当前状态</h2>
-        <dl>
-          <div><dt>模式</dt><dd>${modeLabel(status.mode)}</dd></div>
-          <div><dt>连接</dt><dd>${status.connected ? "已连接" : "未连接"}</dd></div>
-          <div><dt>键盘目标</dt><dd>${status.target === "remote" ? "副电脑" : "主电脑"}</dd></div>
-        </dl>
+        ${definitionList([
+          ["模式", modeLabel(status.mode)],
+          ["连接", status.connected ? "已连接" : "未连接"],
+          ["键盘目标", targetLabel(status.target)]
+        ])}
       </article>
       <article class="panel wide">
         <h2>键盘切换</h2>
         <div class="actions">
-          <button id="target-local">键盘到主电脑</button>
-          <button id="target-remote">键盘到副电脑</button>
+          ${actionButton("target-local", "键盘到主电脑", status.target === "local")}
+          ${actionButton("target-remote", "键盘到副电脑", status.target === "remote")}
         </div>
       </article>
     </section>
@@ -199,44 +275,68 @@ function renderOverviewTab() {
 }
 
 function renderMouseTab() {
+  const preset = status.config.mouseSensitivity;
   return `
     <section class="workspace">
       <article class="panel">
         <h2>鼠标跟随</h2>
-        <dl>
-          <div><dt>自动跟随</dt><dd>${status.config.mouseFollow.enabled ? "开启" : "关闭"}</dd></div>
-          <div><dt>主电脑移动切回</dt><dd>${status.config.mouseFollow.hostMouseReturnsLocal ? "开启" : "关闭"}</dd></div>
-          <div><dt>副电脑移动切过去</dt><dd>${status.config.mouseFollow.remoteMouseSwitchesRemote ? "开启" : "关闭"}</dd></div>
-        </dl>
+        ${definitionList([
+          ["自动跟随", onOff(status.config.mouseFollow.enabled)],
+          ["主电脑移动切回", onOff(status.config.mouseFollow.hostMouseReturnsLocal)],
+          ["副电脑移动切过去", onOff(status.config.mouseFollow.remoteMouseSwitchesRemote)],
+          ["游戏模式", onOff(status.config.gameMode)]
+        ])}
       </article>
       <article class="panel">
-        <h2>频率配置</h2>
-        <dl>
-          <div><dt>主电脑轮询</dt><dd>${status.config.mouseFollow.hostPollIntervalMs}ms</dd></div>
-          <div><dt>副电脑上报</dt><dd>${status.config.mouseFollow.remoteReportIntervalMs}ms</dd></div>
-          <div><dt>主电脑优先冷却</dt><dd>${status.config.mouseFollow.hostPriorityCooldownMs}ms</dd></div>
-          <div><dt>切换防抖</dt><dd>${status.config.mouseFollow.switchDebounceMs}ms</dd></div>
-        </dl>
+        <h2>灵敏度</h2>
+        <div class="actions">
+          ${actionButton("mouse-stable", "稳定", preset === "stable")}
+          ${actionButton("mouse-balanced", "平衡", preset === "balanced")}
+          ${actionButton("mouse-sensitive", "灵敏", preset === "sensitive")}
+        </div>
+        ${definitionList([
+          ["主电脑轮询", `${status.config.mouseFollow.hostPollIntervalMs}ms`],
+          ["副电脑上报", `${status.config.mouseFollow.remoteReportIntervalMs}ms`],
+          ["主电脑优先冷却", `${status.config.mouseFollow.hostPriorityCooldownMs}ms`],
+          ["切换防抖", `${status.config.mouseFollow.switchDebounceMs}ms`]
+        ])}
       </article>
     </section>
   `;
 }
 
 function renderNetworkTab() {
+  const info = diagnostics;
   return `
     <section class="workspace">
       <article class="panel wide">
         <h2>主电脑地址</h2>
         <div class="inline-form">
           <input id="remote-host" value="${escapeHtml(status.config.remoteHost || "")}" placeholder="自动发现，或填写主电脑 IP" />
-          <button id="save-host">保存</button>
+          ${actionButton("save-host", "保存", false)}
         </div>
-        <dl>
-          <div><dt>主电脑地址</dt><dd>${escapeHtml(status.config.remoteHost || "自动发现")}</dd></div>
-          <div><dt>键盘端口</dt><dd>${status.config.tcpPort}</dd></div>
-          <div><dt>发现端口</dt><dd>${status.config.discoveryPort}</dd></div>
-          <div><dt>更新端口</dt><dd>${status.config.updatePort}</dd></div>
-        </dl>
+        ${definitionList([
+          ["主电脑地址", escapeHtml(status.config.remoteHost || "自动发现")],
+          ["自动发现", onOff(status.config.autoDiscovery)],
+          ["键盘端口", String(status.config.tcpPort)],
+          ["发现端口", String(status.config.discoveryPort)],
+          ["更新端口", String(status.config.updatePort)]
+        ])}
+      </article>
+      <article class="panel wide">
+        <div class="panel-title-row">
+          <h2>网络诊断</h2>
+          ${actionButton("refresh-diagnostics", "刷新", false)}
+        </div>
+        ${definitionList([
+          ["本机 LAN IP", escapeHtml(info?.localIps.join(", ") || "点击刷新获取")],
+          ["检测目标", escapeHtml(info?.targetHost || "未填写，当前依赖自动发现")],
+          ["键盘端口检测", portProbeLabel(info?.tcpReachable)],
+          ["更新端口检测", portProbeLabel(info?.updateReachable)],
+          ["运行模式", info ? modeLabel(info.runningMode) : "-"],
+          ["连接状态", info?.connected ? "已连接" : "未连接"],
+          ["键盘目标", info ? targetLabel(info.keyboardTarget) : "-"]
+        ])}
       </article>
     </section>
   `;
@@ -247,29 +347,49 @@ function renderUpdateTab() {
     <section class="workspace">
       <article class="panel wide">
         <h2>更新</h2>
-        <dl>
-          <div><dt>当前版本</dt><dd>v${status.version}</dd></div>
-          <div><dt>主电脑更新服务</dt><dd>${status.config.updatePort} 端口</dd></div>
-          <div><dt>副电脑自动更新</dt><dd>连上主电脑后自动检查</dd></div>
-          <div><dt>更新包目录</dt><dd>updates/manifest.json</dd></div>
-        </dl>
+        ${definitionList([
+          ["当前版本", `v${status.version}`],
+          ["主电脑更新服务", `${status.config.updatePort} 端口`],
+          ["副电脑自动更新", "连上主电脑后自动检查"],
+          ["更新包目录", "updates/manifest.json"]
+        ])}
       </article>
-      <article class="panel wide">
-        <h2>偏好</h2>
-        <div class="settings-row">
-          <span>开机自动启动</span>
-          <button id="toggle-start-login">${status.config.startOnLogin ? "已开启" : "已关闭"}</button>
-        </div>
-        <div class="settings-row">
-          <span>界面主题</span>
-          <div class="segmented">
-            <button id="theme-light" class="${status.config.theme === "light" ? "selected" : ""}">清爽浅色</button>
-            <button id="theme-soft" class="${status.config.theme === "soft" ? "selected" : ""}">柔和浅色</button>
+    </section>
+  `;
+}
+
+function renderSettingsTab() {
+  return `
+    <section class="workspace">
+      <article class="panel">
+        <h2>启动偏好</h2>
+        <div class="settings-block">
+          <span>启动默认模式</span>
+          <div class="actions">
+            ${actionButton("startup-last", "沿用上次", status.config.startupMode === "last")}
+            ${actionButton("startup-host", "主电脑", status.config.startupMode === "host")}
+            ${actionButton("startup-remote", "副电脑", status.config.startupMode === "remote")}
+            ${actionButton("startup-idle", "不自动启动", status.config.startupMode === "idle")}
           </div>
         </div>
-        <dl>
-          <div><dt>上次模式</dt><dd>${modeLabel((status.config.lastMode as AppStatus["mode"]) || "idle")}</dd></div>
-        </dl>
+        ${toggleRow("开机自动启动", "start-login", status.config.startOnLogin)}
+        ${toggleRow("启动后最小化", "minimize-on-start", status.config.minimizeToTray)}
+        ${definitionList([
+          ["上次模式", modeLabel((status.config.lastMode as AppMode) || "idle")],
+          ["兼容开关", status.config.restoreLastMode ? "沿用上次模式" : "固定启动模式"]
+        ])}
+      </article>
+      <article class="panel">
+        <h2>安全和发现</h2>
+        ${toggleRow("自动寻找主电脑", "auto-discovery", status.config.autoDiscovery)}
+        ${toggleRow("游戏模式", "game-mode", status.config.gameMode)}
+      </article>
+      <article class="panel wide">
+        <h2>界面主题</h2>
+        <div class="actions">
+          ${actionButton("theme-light", "清爽浅色", status.config.theme === "light")}
+          ${actionButton("theme-soft", "柔和浅色", status.config.theme === "soft")}
+        </div>
       </article>
     </section>
   `;
@@ -281,13 +401,13 @@ function renderLogs() {
       <div class="panel-title-row">
         <h2>日志</h2>
         <div class="mini-actions">
-          <button id="toggle-autolog">${autoFollowLogs ? "停止跟随" : "跟随最新"}</button>
-          <button id="clear-logs">清空日志</button>
-          <button id="copy-logs">复制日志</button>
-          <button id="download-logs">导出日志</button>
+          ${actionButton("toggle-autolog", autoFollowLogs ? "暂停跟随" : "继续跟随", !autoFollowLogs)}
+          ${actionButton("clear-logs", "清空", false)}
+          ${actionButton("copy-logs", "复制", false)}
+          ${actionButton("download-logs", "导出", false)}
         </div>
       </div>
-      <textarea id="log-text" readonly spellcheck="false">${escapeHtml(status.logs.join("") || "等待启动...")}</textarea>
+      <textarea id="log-text" readonly spellcheck="false">${escapeHtml(compactLogs(status.logs) || "等待启动...")}</textarea>
     </section>
   `;
 }
@@ -296,22 +416,35 @@ function bindEvents() {
   document.querySelectorAll<HTMLButtonElement>("[data-tab]").forEach((button) => {
     button.addEventListener("click", () => {
       activeTab = button.dataset.tab as Tab;
+      if (activeTab === "network") refreshDiagnostics();
       render();
     });
   });
-  document.querySelector("#start-host")?.addEventListener("click", () => startMode("host"));
-  document.querySelector("#start-remote")?.addEventListener("click", () => startMode("remote"));
-  document.querySelector("#stop")?.addEventListener("click", stopMode);
-  document.querySelector("#save-host")?.addEventListener("click", saveRemoteHost);
-  document.querySelector("#target-local")?.addEventListener("click", () => setKeyboardTarget("local"));
-  document.querySelector("#target-remote")?.addEventListener("click", () => setKeyboardTarget("remote"));
-  document.querySelector("#toggle-start-login")?.addEventListener("click", () => setStartOnLogin(!status.config.startOnLogin));
-  document.querySelector("#theme-light")?.addEventListener("click", () => setTheme("light"));
-  document.querySelector("#theme-soft")?.addEventListener("click", () => setTheme("soft"));
-  document.querySelector("#copy-logs")?.addEventListener("click", copyLogs);
-  document.querySelector("#clear-logs")?.addEventListener("click", clearLogs);
-  document.querySelector("#download-logs")?.addEventListener("click", downloadLogs);
-  document.querySelector("#toggle-autolog")?.addEventListener("click", () => {
+  onClick("start-host", () => startMode("host"));
+  onClick("start-remote", () => startMode("remote"));
+  onClick("stop", stopMode);
+  onClick("save-host", saveRemoteHost);
+  onClick("target-local", () => setKeyboardTarget("local"));
+  onClick("target-remote", () => setKeyboardTarget("remote"));
+  onClick("start-login", () => setStartOnLogin(!status.config.startOnLogin));
+  onClick("restore-last-mode", () => setRestoreLastMode(!status.config.restoreLastMode));
+  onClick("startup-last", () => setStartupMode("last"));
+  onClick("startup-host", () => setStartupMode("host"));
+  onClick("startup-remote", () => setStartupMode("remote"));
+  onClick("startup-idle", () => setStartupMode("idle"));
+  onClick("minimize-on-start", () => setMinimizeOnStart(!status.config.minimizeToTray));
+  onClick("auto-discovery", () => setAutoDiscovery(!status.config.autoDiscovery));
+  onClick("game-mode", () => setGameMode(!status.config.gameMode));
+  onClick("theme-light", () => setTheme("light"));
+  onClick("theme-soft", () => setTheme("soft"));
+  onClick("mouse-stable", () => setMouseSensitivity("stable"));
+  onClick("mouse-balanced", () => setMouseSensitivity("balanced"));
+  onClick("mouse-sensitive", () => setMouseSensitivity("sensitive"));
+  onClick("refresh-diagnostics", refreshDiagnostics);
+  onClick("copy-logs", copyLogs);
+  onClick("clear-logs", clearLogs);
+  onClick("download-logs", downloadLogs);
+  onClick("toggle-autolog", () => {
     autoFollowLogs = !autoFollowLogs;
     render();
   });
@@ -321,10 +454,79 @@ function bindEvents() {
   });
 }
 
-function modeLabel(mode: AppStatus["mode"]) {
+function onClick(id: string, handler: () => void | Promise<void>) {
+  document.querySelector(`#${id}`)?.addEventListener("click", () => {
+    void handler();
+  });
+}
+
+function actionButton(id: string, label: string, selected: boolean) {
+  const busy = pendingAction === id;
+  return `<button id="${id}" class="${selected ? "selected" : ""}" ${busy ? "disabled" : ""}>${busy ? "处理中..." : label}</button>`;
+}
+
+function toggleRow(label: string, id: string, enabled: boolean) {
+  return `
+    <div class="settings-row">
+      <span>${label}</span>
+      ${actionButton(id, enabled ? "已开启" : "已关闭", enabled)}
+    </div>
+  `;
+}
+
+function definitionList(items: Array<[string, string]>) {
+  return `
+    <dl>
+      ${items.map(([key, value]) => `<div><dt>${key}</dt><dd>${value}</dd></div>`).join("")}
+    </dl>
+  `;
+}
+
+function modeLabel(mode: AppMode) {
   if (mode === "host") return "主电脑";
   if (mode === "remote") return "副电脑";
   return "空闲";
+}
+
+function targetLabel(target: KeyboardTarget) {
+  return target === "remote" ? "副电脑" : "主电脑";
+}
+
+function onOff(enabled: boolean) {
+  return enabled ? "开启" : "关闭";
+}
+
+function portProbeLabel(value: boolean | null | undefined) {
+  if (value === true) return "可连接";
+  if (value === false) return "不可连接";
+  return "未检测";
+}
+
+function compactLogs(logs: string[]) {
+  const lines = logs.join("").split(/\r?\n/);
+  const compacted: string[] = [];
+  let previous = "";
+  let repeated = 0;
+
+  for (const line of lines) {
+    if (!line) continue;
+    if (line === previous) {
+      repeated += 1;
+      continue;
+    }
+    flushRepeated();
+    compacted.push(line);
+    previous = line;
+    repeated = 0;
+  }
+  flushRepeated();
+  return compacted.join("\n");
+
+  function flushRepeated() {
+    if (repeated > 0) {
+      compacted.push(`  ↳ 上一条重复 ${repeated} 次`);
+    }
+  }
 }
 
 function escapeHtml(value: string) {

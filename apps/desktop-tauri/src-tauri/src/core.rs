@@ -339,7 +339,10 @@ fn run_host_mouse_loop(runtime: Arc<AppRuntime>) {
         thread::sleep(Duration::from_millis(
             config.mouse_follow.host_poll_interval_ms,
         ));
-        if !config.mouse_follow.enabled || !config.mouse_follow.host_mouse_returns_local {
+        if config.game_mode
+            || !config.mouse_follow.enabled
+            || !config.mouse_follow.host_mouse_returns_local
+        {
             continue;
         }
         let Ok(current) = cursor_position() else {
@@ -484,6 +487,10 @@ fn resolve_remote_target(runtime: &Arc<AppRuntime>) -> Option<String> {
     {
         return Some(format!("{}:{}", host.trim(), config.tcp_port));
     }
+    if !config.auto_discovery {
+        runtime.log("[副电脑] 自动发现已关闭，请在网络诊断里填写主电脑 IP。\n");
+        return None;
+    }
     runtime.log("[副电脑] 正在自动寻找主电脑...\n");
     match discover_host(Duration::from_secs(8)) {
         Ok(found) => {
@@ -524,7 +531,10 @@ fn run_remote_mouse_loop(runtime: Arc<AppRuntime>, event_tx: mpsc::Sender<Bridge
         thread::sleep(Duration::from_millis(
             config.mouse_follow.remote_report_interval_ms,
         ));
-        if !config.mouse_follow.enabled || !config.mouse_follow.remote_mouse_switches_remote {
+        if config.game_mode
+            || !config.mouse_follow.enabled
+            || !config.mouse_follow.remote_mouse_switches_remote
+        {
             continue;
         }
         let Ok(current) = cursor_position() else {

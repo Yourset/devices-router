@@ -3,7 +3,7 @@ use std::fs;
 use std::path::PathBuf;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub struct MouseFollowConfig {
     pub enabled: bool,
     pub host_mouse_returns_local: bool,
@@ -29,15 +29,21 @@ impl Default for MouseFollowConfig {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub struct AppConfig {
     pub tcp_port: u16,
     pub discovery_port: u16,
     pub update_port: u16,
     pub remote_host: Option<String>,
     pub mouse_follow: MouseFollowConfig,
+    pub mouse_sensitivity: String,
+    pub startup_mode: String,
     pub last_mode: String,
+    pub restore_last_mode: bool,
     pub start_on_login: bool,
+    pub minimize_to_tray: bool,
+    pub auto_discovery: bool,
+    pub game_mode: bool,
     pub theme: String,
 }
 
@@ -49,8 +55,14 @@ impl Default for AppConfig {
             update_port: 8767,
             remote_host: None,
             mouse_follow: MouseFollowConfig::default(),
+            mouse_sensitivity: "balanced".to_string(),
+            startup_mode: "last".to_string(),
             last_mode: "idle".to_string(),
+            restore_last_mode: true,
             start_on_login: false,
+            minimize_to_tray: false,
+            auto_discovery: true,
+            game_mode: false,
             theme: "light".to_string(),
         }
     }
@@ -98,6 +110,47 @@ impl AppConfig {
         {
             self.mouse_follow.switch_debounce_ms = 80;
         }
+        if !matches!(
+            self.mouse_sensitivity.as_str(),
+            "stable" | "balanced" | "sensitive"
+        ) {
+            self.mouse_sensitivity = "balanced".to_string();
+        }
+        if !matches!(
+            self.startup_mode.as_str(),
+            "last" | "host" | "remote" | "idle"
+        ) {
+            self.startup_mode = if self.restore_last_mode {
+                "last".to_string()
+            } else {
+                "idle".to_string()
+            };
+        }
+        self.restore_last_mode = self.startup_mode == "last";
+        apply_mouse_sensitivity(&mut self.mouse_follow, &self.mouse_sensitivity);
+    }
+}
+
+pub fn apply_mouse_sensitivity(mouse: &mut MouseFollowConfig, preset: &str) {
+    match preset {
+        "stable" => {
+            mouse.host_poll_interval_ms = 30;
+            mouse.remote_report_interval_ms = 80;
+            mouse.host_priority_cooldown_ms = 140;
+            mouse.switch_debounce_ms = 160;
+        }
+        "sensitive" => {
+            mouse.host_poll_interval_ms = 15;
+            mouse.remote_report_interval_ms = 25;
+            mouse.host_priority_cooldown_ms = 40;
+            mouse.switch_debounce_ms = 50;
+        }
+        _ => {
+            mouse.host_poll_interval_ms = 20;
+            mouse.remote_report_interval_ms = 40;
+            mouse.host_priority_cooldown_ms = 60;
+            mouse.switch_debounce_ms = 80;
+        }
     }
 }
 
@@ -124,6 +177,10 @@ mod tests {
     fn default_config_remembers_idle_mode() {
         assert_eq!(AppConfig::default().last_mode, "idle");
         assert_eq!(AppConfig::default().theme, "light");
+        assert!(AppConfig::default().restore_last_mode);
+        assert!(AppConfig::default().auto_discovery);
+        assert_eq!(AppConfig::default().startup_mode, "last");
+        assert_eq!(AppConfig::default().mouse_sensitivity, "balanced");
     }
 
     #[test]
@@ -140,5 +197,30 @@ mod tests {
         assert_eq!(config.mouse_follow.remote_report_interval_ms, 40);
         assert_eq!(config.mouse_follow.host_priority_cooldown_ms, 60);
         assert_eq!(config.mouse_follow.switch_debounce_ms, 80);
+    }
+
+    #[test]
+    fn mouse_sensitivity_presets_are_applied() {
+        let mut mouse = MouseFollowConfig::default();
+
+        apply_mouse_sensitivity(&mut mouse, "stable");
+        assert_eq!(mouse.remote_report_interval_ms, 80);
+        assert_eq!(mouse.switch_debounce_ms, 160);
+
+        apply_mouse_sensitivity(&mut mouse, "sensitive");
+        assert_eq!(mouse.remote_report_interval_ms, 25);
+        assert_eq!(mouse.switch_debounce_ms, 50);
+    }
+
+    #[test]
+    fn normalize_syncs_legacy_restore_last_mode() {
+        let mut config = AppConfig::default();
+        config.startup_mode = "bad-value".to_string();
+        config.restore_last_mode = false;
+
+        config.normalize();
+
+        assert_eq!(config.startup_mode, "idle");
+        assert!(!config.restore_last_mode);
     }
 }

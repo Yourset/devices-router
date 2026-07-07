@@ -10,8 +10,29 @@ mod startup;
 mod updates;
 
 use app_state::{AppMode, AppStatus, KeyboardTarget, SharedState};
+use config::apply_mouse_sensitivity;
 use protocol::{BridgeEvent, TargetSide};
+use serde::Serialize;
+use std::net::{TcpStream, ToSocketAddrs};
+use std::time::Duration;
 use tauri::Manager;
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NetworkDiagnostics {
+    local_ips: Vec<String>,
+    tcp_port: u16,
+    discovery_port: u16,
+    update_port: u16,
+    configured_host: Option<String>,
+    auto_discovery: bool,
+    running_mode: String,
+    connected: bool,
+    keyboard_target: KeyboardTarget,
+    target_host: Option<String>,
+    tcp_reachable: Option<bool>,
+    update_reachable: Option<bool>,
+}
 
 #[tauri::command]
 fn app_status(state: tauri::State<SharedState>) -> AppStatus {
@@ -105,7 +126,9 @@ fn set_theme(theme: String, state: tauri::State<SharedState>) -> Result<(), Stri
 #[tauri::command]
 fn set_start_on_login(enabled: bool, state: tauri::State<SharedState>) -> Result<(), String> {
     let runtime = state.runtime();
-    let mode = AppMode::from_str(&runtime.config().last_mode).unwrap_or(AppMode::Host);
+    let config = runtime.config();
+    let mode =
+        resolve_startup_mode(&config.startup_mode, &config.last_mode).unwrap_or(AppMode::Host);
     startup::set_start_on_login(enabled, mode).map_err(|err| err.to_string())?;
     runtime.update_config(|config| config.start_on_login = enabled);
     runtime.log(if enabled {
@@ -114,6 +137,150 @@ fn set_start_on_login(enabled: bool, state: tauri::State<SharedState>) -> Result
         "[配置] 已关闭开机自动启动\n"
     });
     Ok(())
+}
+
+#[tauri::command]
+fn set_restore_last_mode(enabled: bool, state: tauri::State<SharedState>) {
+    state.runtime().update_config(|config| {
+        config.restore_last_mode = enabled;
+        config.startup_mode = if enabled {
+            "last".to_string()
+        } else {
+            "idle".to_string()
+        };
+    });
+    state.runtime().log(if enabled {
+        "[配置] 已开启启动时恢复上次模式\n"
+    } else {
+        "[配置] 已关闭启动时恢复上次模式\n"
+    });
+}
+
+#[tauri::command]
+fn set_startup_mode(mode: String, state: tauri::State<SharedState>) -> Result<(), String> {
+    if !matches!(mode.as_str(), "last" | "host" | "remote" | "idle") {
+        return Err(format!("Unsupported startup mode: {mode}"));
+    }
+    state.runtime().update_config(|config| {
+        config.startup_mode = mode.clone();
+        config.restore_last_mode = mode == "last";
+    });
+    state.runtime().log(format!(
+        "[配置] 启动默认模式已切换为：{}\n",
+        startup_mode_label(&mode)
+    ));
+    Ok(())
+}
+
+#[tauri::command]
+fn set_minimize_to_tray(enabled: bool, state: tauri::State<SharedState>) {
+    state
+        .runtime()
+        .update_config(|config| config.minimize_to_tray = enabled);
+    state.runtime().log(if enabled {
+        "[配置] 已开启启动后最小化偏好\n"
+    } else {
+        "[配置] 已关闭启动后最小化偏好\n"
+    });
+}
+
+#[tauri::command]
+fn set_auto_discovery(enabled: bool, state: tauri::State<SharedState>) {
+    state
+        .runtime()
+        .update_config(|config| config.auto_discovery = enabled);
+    state.runtime().log(if enabled {
+        "[配置] 已开启自动寻找主电脑\n"
+    } else {
+        "[配置] 已关闭自动寻找主电脑\n"
+    });
+}
+
+#[tauri::command]
+fn set_game_mode(enabled: bool, state: tauri::State<SharedState>) {
+    state.runtime().update_config(|config| {
+        config.game_mode = enabled;
+    });
+    state.runtime().log(if enabled {
+        "[配置] 已开启游戏模式：自动鼠标切换暂时关闭\n"
+    } else {
+        "[配置] 已关闭游戏模式\n"
+    });
+}
+
+#[tauri::command]
+fn set_mouse_sensitivity(preset: String, state: tauri::State<SharedState>) -> Result<(), String> {
+    if !matches!(preset.as_str(), "stable" | "balanced" | "sensitive") {
+        return Err(format!("Unsupported mouse sensitivity: {preset}"));
+    }
+    state.runtime().update_config(|config| {
+        config.mouse_sensitivity = preset.clone();
+        apply_mouse_sensitivity(&mut config.mouse_follow, &preset);
+    });
+    state
+        .runtime()
+        .log(format!("[配置] 鼠标跟随灵敏度已切换为：{preset}\n"));
+    Ok(())
+}
+
+#[tauri::command]
+fn network_diagnostics(state: tauri::State<SharedState>) -> NetworkDiagnostics {
+    let status = state.snapshot();
+    let target_host = status
+        .config
+        .remote_host
+        .as_ref()
+        .map(|host| host.trim().to_string())
+        .filter(|host| !host.is_empty());
+    let tcp_reachable = target_host
+        .as_ref()
+        .map(|host| probe_port(host, status.config.tcp_port));
+    let update_reachable = target_host
+        .as_ref()
+        .map(|host| probe_port(host, status.config.update_port));
+    NetworkDiagnostics {
+        local_ips: discovery::local_ipv4_addresses()
+            .into_iter()
+            .map(|ip| ip.to_string())
+            .collect(),
+        tcp_port: status.config.tcp_port,
+        discovery_port: status.config.discovery_port,
+        update_port: status.config.update_port,
+        configured_host: status.config.remote_host,
+        auto_discovery: status.config.auto_discovery,
+        running_mode: status.mode,
+        connected: status.connected,
+        keyboard_target: status.target,
+        target_host,
+        tcp_reachable,
+        update_reachable,
+    }
+}
+
+fn probe_port(host: &str, port: u16) -> bool {
+    let Ok(mut addresses) = (host, port).to_socket_addrs() else {
+        return false;
+    };
+    addresses
+        .any(|address| TcpStream::connect_timeout(&address, Duration::from_millis(600)).is_ok())
+}
+
+fn resolve_startup_mode(startup_mode: &str, last_mode: &str) -> Option<AppMode> {
+    match startup_mode {
+        "host" => Some(AppMode::Host),
+        "remote" => Some(AppMode::Remote),
+        "idle" => None,
+        _ => AppMode::from_str(last_mode).filter(|mode| *mode != AppMode::Idle),
+    }
+}
+
+fn startup_mode_label(mode: &str) -> &'static str {
+    match mode {
+        "host" => "主电脑",
+        "remote" => "副电脑",
+        "idle" => "不自动启动模式",
+        _ => "沿用上次模式",
+    }
 }
 
 pub fn run() {
@@ -126,10 +293,15 @@ pub fn run() {
                 "--remote" => Some(AppMode::Remote),
                 _ => None,
             });
-            let remembered_mode = AppMode::from_str(&state.runtime().config().last_mode)
-                .filter(|mode| *mode != AppMode::Idle);
-            let autostart = arg_mode.or(remembered_mode);
+            let config = state.runtime().config();
+            let autostart =
+                arg_mode.or_else(|| resolve_startup_mode(&config.startup_mode, &config.last_mode));
             app.manage(state.clone());
+            if config.minimize_to_tray {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.minimize();
+                }
+            }
             if let Some(mode) = autostart {
                 let runtime = state.runtime();
                 std::thread::spawn(move || {
@@ -148,7 +320,14 @@ pub fn run() {
             set_remote_host,
             set_keyboard_target,
             set_theme,
-            set_start_on_login
+            set_start_on_login,
+            set_restore_last_mode,
+            set_startup_mode,
+            set_minimize_to_tray,
+            set_auto_discovery,
+            set_game_mode,
+            set_mouse_sensitivity,
+            network_diagnostics
         ])
         .run(tauri::generate_context!())
         .expect("error while running Devices Router");
