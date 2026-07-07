@@ -4,7 +4,7 @@ use crate::input::send_key_event;
 use crate::keyboard_hook::{run_keyboard_hook, set_key_suppression, RawKeyEvent};
 use crate::mouse::cursor_position;
 use crate::protocol::{
-    decode_event, encode_event, BridgeEvent, ClientRole, KeyAction, MouseSource,
+    decode_event, encode_event, BridgeEvent, ClientRole, KeyAction, MouseSource, TargetSide,
 };
 use crate::updates::{check_remote_update, host_from_socket_addr, start_update_server};
 use anyhow::{Context, Result};
@@ -224,6 +224,18 @@ fn handle_host_client(
         match reader.read_line(&mut line) {
             Ok(0) => {}
             Ok(_) => match decode_event(line.as_bytes()) {
+                Ok(BridgeEvent::TargetRequest { target }) => match target {
+                    TargetSide::Local => {
+                        runtime.set_target(KeyboardTarget::Local);
+                        set_key_suppression(false);
+                        runtime.log("[主电脑] 副电脑请求：键盘回主电脑\n");
+                    }
+                    TargetSide::Remote => {
+                        runtime.set_target(KeyboardTarget::Remote);
+                        set_key_suppression(true);
+                        runtime.log("[主电脑] 副电脑请求：键盘到副电脑\n");
+                    }
+                },
                 Ok(BridgeEvent::MouseActivity {
                     source: MouseSource::Remote,
                 }) => {
@@ -327,13 +339,31 @@ fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
                         );
                     }
                 }
-                let mouse_stream = stream
+                let mut writer = stream
                     .try_clone()
-                    .context("clone remote stream for mouse")?;
+                    .context("clone remote stream for writer")?;
+                let (event_tx, event_rx) = mpsc::channel::<BridgeEvent>();
+                runtime.set_remote_sender(Some(event_tx.clone()));
+                let writer_runtime = Arc::clone(&runtime);
+                thread::Builder::new()
+                    .name("devices-router-remote-writer".to_string())
+                    .spawn(move || {
+                        while let Ok(event) = event_rx.recv() {
+                            let result = encode_event(&event).and_then(|bytes| {
+                                writer.write_all(&bytes)?;
+                                Ok(())
+                            });
+                            if let Err(err) = result {
+                                writer_runtime.log(format!("[副电脑] 发送控制消息失败：{err:#}\n"));
+                                break;
+                            }
+                        }
+                    })
+                    .context("spawn remote writer loop")?;
                 let mouse_runtime = Arc::clone(&runtime);
                 thread::Builder::new()
                     .name("devices-router-remote-mouse".to_string())
-                    .spawn(move || run_remote_mouse_loop(mouse_runtime, mouse_stream))
+                    .spawn(move || run_remote_mouse_loop(mouse_runtime, event_tx))
                     .context("spawn remote mouse loop")?;
                 let mut reader = BufReader::new(stream);
                 let mut line = String::new();
@@ -366,6 +396,7 @@ fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
                     }
                 }
                 runtime.set_connected(false);
+                runtime.set_remote_sender(None);
             }
             Err(err) => {
                 runtime.log(format!("[副电脑] 连接失败：{target}，{err}\n"));
@@ -414,7 +445,7 @@ fn resolve_remote_target(runtime: &Arc<AppRuntime>) -> Option<String> {
     }
 }
 
-fn run_remote_mouse_loop(runtime: Arc<AppRuntime>, mut stream: TcpStream) {
+fn run_remote_mouse_loop(runtime: Arc<AppRuntime>, event_tx: mpsc::Sender<BridgeEvent>) {
     let Ok(mut last) = cursor_position() else {
         runtime.log("[副电脑] 鼠标监听不可用\n");
         return;
@@ -437,15 +468,9 @@ fn run_remote_mouse_loop(runtime: Arc<AppRuntime>, mut stream: TcpStream) {
         let event = BridgeEvent::MouseActivity {
             source: MouseSource::Remote,
         };
-        match encode_event(&event).and_then(|bytes| {
-            stream.write_all(&bytes)?;
-            Ok(())
-        }) {
-            Ok(()) => {}
-            Err(err) => {
-                runtime.log(format!("[副电脑] 鼠标活动上报失败：{err:#}\n"));
-                return;
-            }
+        if event_tx.send(event).is_err() {
+            runtime.log("[副电脑] 鼠标活动上报已停止，等待重新连接\n");
+            return;
         }
     }
 }

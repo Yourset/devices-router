@@ -10,6 +10,7 @@ mod startup;
 mod updates;
 
 use app_state::{AppMode, AppStatus, KeyboardTarget, SharedState};
+use protocol::{BridgeEvent, TargetSide};
 use tauri::Manager;
 
 #[tauri::command]
@@ -54,14 +55,37 @@ fn set_keyboard_target(target: String, state: tauri::State<SharedState>) -> Resu
         other => return Err(format!("Unsupported keyboard target: {other}")),
     };
     let runtime = state.runtime();
+    let mode = AppMode::from_str(&state.snapshot().mode).unwrap_or(AppMode::Idle);
+    if mode == AppMode::Remote {
+        let target_side = match target {
+            KeyboardTarget::Local => TargetSide::Local,
+            KeyboardTarget::Remote => TargetSide::Remote,
+        };
+        let label = keyboard_target_label(target);
+        if runtime.send_remote_event(BridgeEvent::TargetRequest {
+            target: target_side,
+        }) {
+            runtime.log(format!("[副电脑] 已请求主电脑切换键盘目标：{label}\n"));
+        } else {
+            runtime.log("[副电脑] 尚未连接主电脑，无法请求切换键盘目标\n");
+        }
+        return Ok(());
+    }
+
     runtime.set_target(target);
     keyboard_hook::set_key_suppression(target == KeyboardTarget::Remote);
-    let label = match target {
+    runtime.log(format!(
+        "[主电脑] 键盘目标已手动切到：{}\n",
+        keyboard_target_label(target)
+    ));
+    Ok(())
+}
+
+fn keyboard_target_label(target: KeyboardTarget) -> &'static str {
+    match target {
         KeyboardTarget::Local => "主电脑",
         KeyboardTarget::Remote => "副电脑",
-    };
-    runtime.log(format!("[主电脑] 键盘目标已手动切到：{label}\n"));
-    Ok(())
+    }
 }
 
 #[tauri::command]

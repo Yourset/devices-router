@@ -1,6 +1,8 @@
 use crate::config::AppConfig;
+use crate::protocol::BridgeEvent;
 use serde::Serialize;
 use std::collections::VecDeque;
+use std::sync::mpsc;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
@@ -77,6 +79,7 @@ struct InnerState {
     target: KeyboardTarget,
     logs: VecDeque<String>,
     config: AppConfig,
+    remote_sender: Option<mpsc::Sender<BridgeEvent>>,
 }
 
 impl SharedState {
@@ -90,6 +93,7 @@ impl SharedState {
                     target: KeyboardTarget::Local,
                     logs: VecDeque::new(),
                     config: AppConfig::load(),
+                    remote_sender: None,
                 }),
                 stop: AtomicBool::new(false),
             }),
@@ -106,6 +110,7 @@ impl SharedState {
         inner.mode = AppMode::Idle;
         inner.connected = false;
         inner.target = KeyboardTarget::Local;
+        inner.remote_sender = None;
         inner.config.last_mode = AppMode::Idle.as_str().to_string();
         inner.config.save();
         push_log(&mut inner.logs, "[应用] 已停止\n".to_string());
@@ -165,6 +170,9 @@ impl AppRuntime {
     pub fn set_connected(&self, connected: bool) {
         let mut inner = self.state.lock().expect("state lock poisoned");
         inner.connected = connected;
+        if !connected {
+            inner.remote_sender = None;
+        }
     }
 
     pub fn set_target(&self, target: KeyboardTarget) {
@@ -192,6 +200,19 @@ impl AppRuntime {
         updater(&mut inner.config);
         inner.config.save();
         inner.config.clone()
+    }
+
+    pub fn set_remote_sender(&self, sender: Option<mpsc::Sender<BridgeEvent>>) {
+        let mut inner = self.state.lock().expect("state lock poisoned");
+        inner.remote_sender = sender;
+    }
+
+    pub fn send_remote_event(&self, event: BridgeEvent) -> bool {
+        let sender = {
+            let inner = self.state.lock().expect("state lock poisoned");
+            inner.remote_sender.clone()
+        };
+        sender.is_some_and(|sender| sender.send(event).is_ok())
     }
 }
 

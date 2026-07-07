@@ -6,6 +6,7 @@ pub enum BridgeEvent {
     ClientHello { role: ClientRole },
     Ping { message: String },
     MouseActivity { source: MouseSource },
+    TargetRequest { target: TargetSide },
     Key { action: KeyAction, key: String },
 }
 
@@ -19,6 +20,13 @@ pub enum ClientRole {
 #[serde(rename_all = "lowercase")]
 pub enum MouseSource {
     Host,
+    Remote,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TargetSide {
+    Local,
     Remote,
 }
 
@@ -92,5 +100,16 @@ mod tests {
 
         assert_eq!(decode_discovery(&payload), Some(8765));
         assert_eq!(decode_discovery("not-devices-router"), None);
+    }
+
+    #[test]
+    fn target_request_round_trips() {
+        let event = BridgeEvent::TargetRequest {
+            target: TargetSide::Remote,
+        };
+
+        let payload = encode_event(&event).unwrap();
+
+        assert_eq!(decode_event(&payload).unwrap(), event);
     }
 }
