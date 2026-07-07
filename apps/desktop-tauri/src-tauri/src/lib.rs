@@ -65,9 +65,9 @@ fn set_keyboard_target(target: String, state: tauri::State<SharedState>) -> Resu
         if runtime.send_remote_event(BridgeEvent::TargetRequest {
             target: target_side,
         }) {
-            runtime.log(format!("[副电脑] 已请求主电脑切换键盘目标：{label}\n"));
+            runtime.log(format!("[副电脑] 切换请求已发出：键盘到{label}\n"));
         } else {
-            runtime.log("[副电脑] 尚未连接主电脑，无法请求切换键盘目标\n");
+            runtime.log("[副电脑] 切换请求未发出：当前没有可用的主电脑连接\n");
         }
         return Ok(());
     }

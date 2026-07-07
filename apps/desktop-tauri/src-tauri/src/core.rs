@@ -389,7 +389,7 @@ fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
                     .try_clone()
                     .context("clone remote stream for writer")?;
                 let (event_tx, event_rx) = mpsc::channel::<BridgeEvent>();
-                runtime.set_remote_sender(Some(event_tx.clone()));
+                let sender_generation = runtime.set_remote_sender(event_tx.clone());
                 let writer_runtime = Arc::clone(&runtime);
                 thread::Builder::new()
                     .name("devices-router-remote-writer".to_string())
@@ -442,7 +442,7 @@ fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
                     }
                 }
                 runtime.set_connected(false);
-                runtime.set_remote_sender(None);
+                runtime.clear_remote_sender(sender_generation);
             }
             Err(err) => {
                 runtime.log(format!("[副电脑] 连接失败：{target}，{err}\n"));
@@ -496,6 +496,7 @@ fn run_remote_mouse_loop(runtime: Arc<AppRuntime>, event_tx: mpsc::Sender<Bridge
         runtime.log("[副电脑] 鼠标监听不可用\n");
         return;
     };
+    let mut activity_logs = 0_u8;
     while !runtime.should_stop() {
         let config = runtime.config();
         thread::sleep(Duration::from_millis(
@@ -517,6 +518,10 @@ fn run_remote_mouse_loop(runtime: Arc<AppRuntime>, event_tx: mpsc::Sender<Bridge
         if event_tx.send(event).is_err() {
             runtime.log("[副电脑] 鼠标活动上报已停止，等待重新连接\n");
             return;
+        }
+        if activity_logs < 3 {
+            activity_logs += 1;
+            runtime.log("[副电脑] 已上报鼠标活动给主电脑\n");
         }
     }
 }

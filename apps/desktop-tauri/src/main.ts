@@ -37,7 +37,7 @@ const appRoot = app;
 let activeTab: Tab = "overview";
 let autoFollowLogs = true;
 let status: AppStatus = {
-  version: "0.1.9",
+  version: "0.1.10",
   mode: "idle",
   running: false,
   connected: false,
@@ -55,10 +55,10 @@ let status: AppStatus = {
       enabled: true,
       hostMouseReturnsLocal: true,
       remoteMouseSwitchesRemote: true,
-      hostPollIntervalMs: 50,
-      remoteReportIntervalMs: 500,
-      hostPriorityCooldownMs: 800,
-      switchDebounceMs: 300
+      hostPollIntervalMs: 30,
+      remoteReportIntervalMs: 80,
+      hostPriorityCooldownMs: 120,
+      switchDebounceMs: 150
     }
   }
 };

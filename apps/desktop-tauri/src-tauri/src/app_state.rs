@@ -80,6 +80,7 @@ struct InnerState {
     logs: VecDeque<String>,
     config: AppConfig,
     remote_sender: Option<mpsc::Sender<BridgeEvent>>,
+    remote_sender_generation: u64,
 }
 
 impl SharedState {
@@ -94,6 +95,7 @@ impl SharedState {
                     logs: VecDeque::new(),
                     config: AppConfig::load(),
                     remote_sender: None,
+                    remote_sender_generation: 0,
                 }),
                 stop: AtomicBool::new(false),
             }),
@@ -111,6 +113,7 @@ impl SharedState {
         inner.connected = false;
         inner.target = KeyboardTarget::Local;
         inner.remote_sender = None;
+        inner.remote_sender_generation = inner.remote_sender_generation.wrapping_add(1);
         inner.config.last_mode = AppMode::Idle.as_str().to_string();
         inner.config.save();
         push_log(&mut inner.logs, "[应用] 已停止\n".to_string());
@@ -151,6 +154,8 @@ impl AppRuntime {
         inner.mode = mode;
         inner.connected = false;
         inner.target = KeyboardTarget::Local;
+        inner.remote_sender = None;
+        inner.remote_sender_generation = inner.remote_sender_generation.wrapping_add(1);
         inner.config.last_mode = mode.as_str().to_string();
         inner.config.save();
         push_log(
@@ -170,9 +175,6 @@ impl AppRuntime {
     pub fn set_connected(&self, connected: bool) {
         let mut inner = self.state.lock().expect("state lock poisoned");
         inner.connected = connected;
-        if !connected {
-            inner.remote_sender = None;
-        }
     }
 
     pub fn set_target(&self, target: KeyboardTarget) {
@@ -202,9 +204,18 @@ impl AppRuntime {
         inner.config.clone()
     }
 
-    pub fn set_remote_sender(&self, sender: Option<mpsc::Sender<BridgeEvent>>) {
+    pub fn set_remote_sender(&self, sender: mpsc::Sender<BridgeEvent>) -> u64 {
         let mut inner = self.state.lock().expect("state lock poisoned");
-        inner.remote_sender = sender;
+        inner.remote_sender_generation = inner.remote_sender_generation.wrapping_add(1);
+        inner.remote_sender = Some(sender);
+        inner.remote_sender_generation
+    }
+
+    pub fn clear_remote_sender(&self, generation: u64) {
+        let mut inner = self.state.lock().expect("state lock poisoned");
+        if inner.remote_sender_generation == generation {
+            inner.remote_sender = None;
+        }
     }
 
     pub fn send_remote_event(&self, event: BridgeEvent) -> bool {
