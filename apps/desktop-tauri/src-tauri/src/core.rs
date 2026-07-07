@@ -16,6 +16,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const TCP_PORT: u16 = 8765;
+const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(300);
 
 pub fn start_mode(mode: AppMode, runtime: Arc<AppRuntime>) -> Result<()> {
     runtime.request_stop();
@@ -167,11 +168,11 @@ fn handle_host_client(
     let mut alt_down = false;
     let mut forwarded_key_logs = 0_u8;
     let mut last_switch = Instant::now()
-        .checked_sub(Duration::from_secs(1))
+        .checked_sub(Duration::from_millis(500))
         .unwrap_or_else(Instant::now);
     let mut last_heartbeat = Instant::now();
     while !runtime.should_stop() {
-        if last_heartbeat.elapsed() >= Duration::from_secs(1) {
+        if last_heartbeat.elapsed() >= HEARTBEAT_INTERVAL {
             let heartbeat = BridgeEvent::Ping {
                 message: "host-heartbeat".to_string(),
             };
@@ -331,7 +332,7 @@ fn run_host_mouse_loop(runtime: Arc<AppRuntime>) {
         return;
     };
     let mut last_switch = Instant::now()
-        .checked_sub(Duration::from_secs(1))
+        .checked_sub(Duration::from_millis(500))
         .unwrap_or_else(Instant::now);
     while !runtime.should_stop() {
         let config = runtime.config();
@@ -409,7 +410,7 @@ fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
                 thread::Builder::new()
                     .name("devices-router-remote-writer".to_string())
                     .spawn(move || loop {
-                        let event = match event_rx.recv_timeout(Duration::from_secs(1)) {
+                        let event = match event_rx.recv_timeout(HEARTBEAT_INTERVAL) {
                             Ok(event) => event,
                             Err(RecvTimeoutError::Timeout) => BridgeEvent::Ping {
                                 message: "remote-heartbeat".to_string(),

@@ -20,10 +20,10 @@ impl Default for MouseFollowConfig {
             enabled: true,
             host_mouse_returns_local: true,
             remote_mouse_switches_remote: true,
-            host_poll_interval_ms: 30,
-            remote_report_interval_ms: 80,
-            host_priority_cooldown_ms: 120,
-            switch_debounce_ms: 150,
+            host_poll_interval_ms: 20,
+            remote_report_interval_ms: 40,
+            host_priority_cooldown_ms: 60,
+            switch_debounce_ms: 80,
         }
     }
 }
@@ -78,17 +78,25 @@ impl AppConfig {
     }
 
     fn normalize(&mut self) {
-        if self.mouse_follow.host_poll_interval_ms == 50 {
-            self.mouse_follow.host_poll_interval_ms = 30;
+        if self.mouse_follow.host_poll_interval_ms == 50
+            || self.mouse_follow.host_poll_interval_ms == 30
+        {
+            self.mouse_follow.host_poll_interval_ms = 20;
         }
-        if self.mouse_follow.remote_report_interval_ms == 500 {
-            self.mouse_follow.remote_report_interval_ms = 80;
+        if self.mouse_follow.remote_report_interval_ms == 500
+            || self.mouse_follow.remote_report_interval_ms == 80
+        {
+            self.mouse_follow.remote_report_interval_ms = 40;
         }
-        if self.mouse_follow.host_priority_cooldown_ms == 800 {
-            self.mouse_follow.host_priority_cooldown_ms = 120;
+        if self.mouse_follow.host_priority_cooldown_ms == 800
+            || self.mouse_follow.host_priority_cooldown_ms == 120
+        {
+            self.mouse_follow.host_priority_cooldown_ms = 60;
         }
-        if self.mouse_follow.switch_debounce_ms == 300 {
-            self.mouse_follow.switch_debounce_ms = 150;
+        if self.mouse_follow.switch_debounce_ms == 300
+            || self.mouse_follow.switch_debounce_ms == 150
+        {
+            self.mouse_follow.switch_debounce_ms = 80;
         }
     }
 }
@@ -128,9 +136,9 @@ mod tests {
 
         config.normalize();
 
-        assert_eq!(config.mouse_follow.host_poll_interval_ms, 30);
-        assert_eq!(config.mouse_follow.remote_report_interval_ms, 80);
-        assert_eq!(config.mouse_follow.host_priority_cooldown_ms, 120);
-        assert_eq!(config.mouse_follow.switch_debounce_ms, 150);
+        assert_eq!(config.mouse_follow.host_poll_interval_ms, 20);
+        assert_eq!(config.mouse_follow.remote_report_interval_ms, 40);
+        assert_eq!(config.mouse_follow.host_priority_cooldown_ms, 60);
+        assert_eq!(config.mouse_follow.switch_debounce_ms, 80);
     }
 }
