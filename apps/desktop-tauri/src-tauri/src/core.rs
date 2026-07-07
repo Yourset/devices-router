@@ -74,17 +74,17 @@ fn run_host(runtime: Arc<AppRuntime>) -> Result<()> {
     runtime.log(format!("[主电脑] 正在监听 0.0.0.0:{TCP_PORT}\n"));
     while !runtime.should_stop() {
         match listener.accept() {
-            Ok((stream, address)) => {
-                match accept_remote_client(&runtime, stream, address) {
-                    Ok(Some(stream)) => {
-                        runtime.set_connected(true);
-                        handle_host_client(&runtime, stream, &key_rx);
-                        runtime.set_connected(false);
-                    }
-                    Ok(None) => {}
-                    Err(err) => runtime.log(format!("[主电脑] 已忽略无法握手的连接：{address}，{err:#}\n")),
+            Ok((stream, address)) => match accept_remote_client(&runtime, stream, address) {
+                Ok(Some(stream)) => {
+                    runtime.set_connected(true);
+                    handle_host_client(&runtime, stream, &key_rx);
+                    runtime.set_connected(false);
                 }
-            }
+                Ok(None) => {}
+                Err(err) => runtime.log(format!(
+                    "[主电脑] 已忽略无法握手的连接：{address}，{err:#}\n"
+                )),
+            },
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                 thread::sleep(Duration::from_millis(100));
             }
@@ -111,9 +111,7 @@ fn accept_remote_client(
         }
         Ok(_) => match decode_event(line.as_bytes()) {
             Ok(BridgeEvent::ClientHello { .. }) => {
-                stream
-                    .set_read_timeout(None)
-                    .context("恢复连接超时失败")?;
+                stream.set_read_timeout(None).context("恢复连接超时失败")?;
                 stream.write_all(&encode_event(&BridgeEvent::Ping {
                     message: "ok".to_string(),
                 })?)?;
@@ -188,7 +186,7 @@ fn handle_host_client(
             }) {
                 Ok(()) => {}
                 Err(err) => {
-            runtime.log(format!("[主电脑] 按键发送失败：{err:#}\n"));
+                    runtime.log(format!("[主电脑] 按键发送失败：{err:#}\n"));
                     return;
                 }
             }
@@ -282,7 +280,9 @@ fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
                 stream.write_all(&encode_event(&BridgeEvent::ClientHello {
                     role: ClientRole::Remote,
                 })?)?;
-                let mouse_stream = stream.try_clone().context("clone remote stream for mouse")?;
+                let mouse_stream = stream
+                    .try_clone()
+                    .context("clone remote stream for mouse")?;
                 let mouse_runtime = Arc::clone(&runtime);
                 thread::Builder::new()
                     .name("devices-router-remote-mouse".to_string())
@@ -298,7 +298,8 @@ fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
                             Ok(BridgeEvent::Key { action, key }) => {
                                 let is_down = matches!(action, KeyAction::Down);
                                 if let Err(err) = send_key_event(&key, is_down) {
-                                    runtime.log(format!("[副电脑] 已忽略无法输入的按键：{err:#}\n"));
+                                    runtime
+                                        .log(format!("[副电脑] 已忽略无法输入的按键：{err:#}\n"));
                                 }
                             }
                             Ok(other) => runtime.log(format!("[副电脑] 收到消息：{other:?}\n")),
@@ -323,7 +324,11 @@ fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
 
 fn resolve_remote_target(runtime: &Arc<AppRuntime>) -> Option<String> {
     let config = runtime.config();
-    if let Some(host) = config.remote_host.as_ref().filter(|host| !host.trim().is_empty()) {
+    if let Some(host) = config
+        .remote_host
+        .as_ref()
+        .filter(|host| !host.trim().is_empty())
+    {
         return Some(format!("{}:{}", host.trim(), config.tcp_port));
     }
     runtime.log("[副电脑] 正在自动寻找主电脑...\n");

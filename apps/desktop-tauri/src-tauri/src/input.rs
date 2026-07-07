@@ -1,11 +1,14 @@
 #[cfg(windows)]
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE,
-    MAPVK_VK_TO_VSC, VIRTUAL_KEY, MapVirtualKeyW,
+    MapVirtualKeyW, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
+    KEYEVENTF_SCANCODE, MAPVK_VK_TO_VSC, VIRTUAL_KEY,
 };
 
 pub fn key_name_to_vk(key: &str) -> Option<u16> {
-    if let Some(raw) = key.strip_prefix('<').and_then(|value| value.strip_suffix('>')) {
+    if let Some(raw) = key
+        .strip_prefix('<')
+        .and_then(|value| value.strip_suffix('>'))
+    {
         return raw.parse::<u16>().ok();
     }
     match key {
@@ -32,7 +35,12 @@ pub fn send_key_event(key: &str, is_down: bool) -> anyhow::Result<()> {
         anyhow::bail!("unsupported key: {key}");
     };
     let scan_code = unsafe { MapVirtualKeyW(vk as u32, MAPVK_VK_TO_VSC) };
-    let flags = KEYEVENTF_SCANCODE | if is_down { Default::default() } else { KEYEVENTF_KEYUP };
+    let flags = KEYEVENTF_SCANCODE
+        | if is_down {
+            Default::default()
+        } else {
+            KEYEVENTF_KEYUP
+        };
     let input = INPUT {
         r#type: INPUT_KEYBOARD,
         Anonymous: INPUT_0 {

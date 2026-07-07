@@ -30,7 +30,7 @@ if (!app) throw new Error("Missing app root");
 const appRoot = app;
 
 let status: AppStatus = {
-  version: "0.1.0",
+  version: "0.1.2",
   mode: "idle",
   running: false,
   connected: false,
@@ -72,6 +72,20 @@ async function saveRemoteHost() {
   const input = document.querySelector<HTMLInputElement>("#remote-host");
   await invoke("set_remote_host", { host: input?.value || null });
   await refreshStatus();
+}
+
+async function copyLogs() {
+  await navigator.clipboard.writeText(status.logs.join(""));
+}
+
+function downloadLogs() {
+  const blob = new Blob([status.logs.join("")], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `devices-router-log-${new Date().toISOString().replace(/[:.]/g, "-")}.txt`;
+  link.click();
+  URL.revokeObjectURL(url);
 }
 
 function render() {
@@ -131,19 +145,25 @@ function render() {
         <section class="panel">
           <h2>网络</h2>
           <div class="inline-form">
-            <input id="remote-host" value="${status.config.remoteHost || ""}" placeholder="自动发现，或填写主电脑 IP" />
+            <input id="remote-host" value="${escapeHtml(status.config.remoteHost || "")}" placeholder="自动发现，或填写主电脑 IP" />
             <button id="save-host">保存</button>
           </div>
           <dl>
-            <div><dt>主电脑地址</dt><dd>${status.config.remoteHost || "自动发现"}</dd></div>
+            <div><dt>主电脑地址</dt><dd>${escapeHtml(status.config.remoteHost || "自动发现")}</dd></div>
             <div><dt>键盘端口</dt><dd>${status.config.tcpPort}</dd></div>
             <div><dt>发现端口</dt><dd>${status.config.discoveryPort}</dd></div>
             <div><dt>更新端口</dt><dd>${status.config.updatePort}</dd></div>
           </dl>
         </section>
         <section class="panel log-panel">
-          <h2>日志</h2>
-          <pre>${status.logs.map(escapeHtml).join("") || "等待启动..."}</pre>
+          <div class="panel-title-row">
+            <h2>日志</h2>
+            <div class="mini-actions">
+              <button id="copy-logs">复制日志</button>
+              <button id="download-logs">导出日志</button>
+            </div>
+          </div>
+          <textarea id="log-text" readonly spellcheck="false">${escapeHtml(status.logs.join("") || "等待启动...")}</textarea>
         </section>
       </section>
     </main>
@@ -152,6 +172,8 @@ function render() {
   document.querySelector("#start-remote")?.addEventListener("click", () => startMode("remote"));
   document.querySelector("#stop")?.addEventListener("click", stopMode);
   document.querySelector("#save-host")?.addEventListener("click", saveRemoteHost);
+  document.querySelector("#copy-logs")?.addEventListener("click", copyLogs);
+  document.querySelector("#download-logs")?.addEventListener("click", downloadLogs);
 }
 
 function escapeHtml(value: string) {

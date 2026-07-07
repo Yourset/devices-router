@@ -156,7 +156,7 @@ dd {
   font-weight: 600;
 }
 
-.log-panel pre {
+.log-panel textarea {
   height: 100%;
   overflow: auto;
   margin: 0;
@@ -166,10 +166,39 @@ dd {
   border-radius: 6px;
   white-space: pre-wrap;
   font: 13px/1.5 Consolas, "Microsoft YaHei UI", monospace;
+  border: 0;
+  resize: none;
+  outline: none;
+  box-sizing: border-box;
+  user-select: text;
+  width: 100%;
 }
 
 .log-panel {
   min-height: 0;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
+}
+
+.panel-title-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.panel-title-row h2 {
+  margin-bottom: 0;
+}
+
+.mini-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.mini-actions button {
+  padding: 6px 9px;
+  font-size: 13px;
 }

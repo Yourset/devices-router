@@ -25,9 +25,6 @@ mod tests {
 
     #[test]
     fn mouse_position_compares_by_coordinates() {
-        assert_eq!(
-            MousePosition { x: 1, y: 2 },
-            MousePosition { x: 1, y: 2 }
-        );
+        assert_eq!(MousePosition { x: 1, y: 2 }, MousePosition { x: 1, y: 2 });
     }
 }
