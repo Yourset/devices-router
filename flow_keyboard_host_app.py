@@ -1,13 +1,13 @@
 from flow_keyboard_bridge.gui import BridgeWindow
 from flow_keyboard_bridge.server import run_server
-from flow_keyboard_bridge.firewall import ensure_update_firewall_rule
+from flow_keyboard_bridge.firewall import ensure_host_firewall_rules
 from flow_keyboard_bridge.app_info import APP_VERSION
 from flow_keyboard_bridge.updates import check_local_self_update, start_update_server
 
 
 def run_host() -> None:
     check_local_self_update("host")
-    ensure_update_firewall_rule()
+    ensure_host_firewall_rules()
     start_update_server()
     run_server("0.0.0.0", 8765)
 
