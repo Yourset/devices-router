@@ -1,7 +1,7 @@
 #[cfg(windows)]
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP,
-    KEYEVENTF_UNICODE, VIRTUAL_KEY,
+    MapVirtualKeyW, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY,
+    KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, KEYEVENTF_UNICODE, MAPVK_VK_TO_VSC, VIRTUAL_KEY,
 };
 
 pub fn text_payload(key: &str) -> Option<&str> {
@@ -58,14 +58,15 @@ pub fn send_key_event(key: &str, is_down: bool) -> anyhow::Result<()> {
     let Some(vk) = key_name_to_vk(key) else {
         anyhow::bail!("unsupported key: {key}");
     };
-    let mut flags = if is_down {
+    if is_extended_key(vk) {
+        return send_scan_key(vk, is_down);
+    }
+
+    let flags = if is_down {
         Default::default()
     } else {
         KEYEVENTF_KEYUP
     };
-    if is_extended_key(vk) {
-        flags |= KEYEVENTF_EXTENDEDKEY;
-    }
     let input = INPUT {
         r#type: INPUT_KEYBOARD,
         Anonymous: INPUT_0 {
@@ -81,6 +82,50 @@ pub fn send_key_event(key: &str, is_down: bool) -> anyhow::Result<()> {
     let sent = unsafe { SendInput(&mut [input], std::mem::size_of::<INPUT>() as i32) };
     if sent != 1 {
         anyhow::bail!("SendInput failed");
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+pub fn release_local_modifiers() -> anyhow::Result<()> {
+    for vk in [
+        0x10, 0xA0, 0xA1, 0x11, 0xA2, 0xA3, 0x12, 0xA4, 0xA5, 0x5B, 0x5C,
+    ] {
+        send_key_event(&format!("<{vk}>"), false)?;
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+pub fn release_local_modifiers() -> anyhow::Result<()> {
+    Ok(())
+}
+
+#[cfg(windows)]
+fn send_scan_key(vk: u16, is_down: bool) -> anyhow::Result<()> {
+    let scan_code = unsafe { MapVirtualKeyW(vk as u32, MAPVK_VK_TO_VSC) };
+    if scan_code == 0 {
+        anyhow::bail!("unsupported scan code for virtual key: {vk}");
+    }
+    let mut flags = KEYEVENTF_SCANCODE | KEYEVENTF_EXTENDEDKEY;
+    if !is_down {
+        flags |= KEYEVENTF_KEYUP;
+    }
+    let input = INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: VIRTUAL_KEY(0),
+                wScan: scan_code as u16,
+                dwFlags: flags,
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    };
+    let sent = unsafe { SendInput(&mut [input], std::mem::size_of::<INPUT>() as i32) };
+    if sent != 1 {
+        anyhow::bail!("SendInput scan key failed");
     }
     Ok(())
 }

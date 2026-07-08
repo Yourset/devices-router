@@ -2,7 +2,7 @@
 
 ## Check Versions First
 
-Both PCs should ideally run the same version. The current mainline version is `v0.1.18`.
+Both PCs should ideally run the same version. The current mainline version is `v0.1.19`.
 
 Check the version on the overview page. If the remote is older, connect it to the host and let it update.
 
@@ -48,7 +48,7 @@ Diagnosis:
 
 Check:
 
-- Both sides are on `v0.1.18` or newer.
+- Both sides are on `v0.1.19` or newer.
 - Mouse follow is enabled on the `Mouse follow` page.
 - After moving the mouse on the remote, remote logs mouse activity reporting.
 - Host logs remote mouse activity and switches the keyboard target.

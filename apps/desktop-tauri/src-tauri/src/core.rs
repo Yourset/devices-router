@@ -1,6 +1,6 @@
 use crate::app_state::{AppMode, AppRuntime, KeyboardTarget};
 use crate::discovery::{broadcast_host, discover_host, scan_local_network};
-use crate::input::send_key_event;
+use crate::input::{release_local_modifiers, send_key_event};
 use crate::keyboard_hook::{run_keyboard_hook, set_key_suppression, RawKeyEvent};
 use crate::mouse::cursor_position;
 use crate::protocol::{
@@ -328,6 +328,11 @@ fn apply_host_target(
     let changed = runtime.target() != target;
     if !changed && log_only_on_change {
         return false;
+    }
+    if target == KeyboardTarget::Remote {
+        if let Err(err) = release_local_modifiers() {
+            runtime.log(format!("[主电脑] 释放本地修饰键失败：{err:#}\n"));
+        }
     }
     runtime.set_target(target);
     set_key_suppression(target == KeyboardTarget::Remote);
