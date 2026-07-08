@@ -1,7 +1,7 @@
 #[cfg(windows)]
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE,
-    VIRTUAL_KEY,
+    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP,
+    KEYEVENTF_UNICODE, VIRTUAL_KEY,
 };
 
 pub fn text_payload(key: &str) -> Option<&str> {
@@ -33,6 +33,19 @@ pub fn key_name_to_vk(key: &str) -> Option<u16> {
     }
 }
 
+pub fn is_extended_key(vk: u16) -> bool {
+    matches!(
+        vk,
+        0x21..=0x28 // PageUp, PageDown, End, Home, arrow keys
+            | 0x2D..=0x2E // Insert, Delete
+            | 0x5B..=0x5C // Left/Right Windows
+            | 0x6F // Numpad divide
+            | 0x90 // NumLock
+            | 0xA3 // Right Ctrl
+            | 0xA5 // Right Alt
+    )
+}
+
 #[cfg(windows)]
 pub fn send_key_event(key: &str, is_down: bool) -> anyhow::Result<()> {
     if let Some(text) = text_payload(key) {
@@ -45,11 +58,14 @@ pub fn send_key_event(key: &str, is_down: bool) -> anyhow::Result<()> {
     let Some(vk) = key_name_to_vk(key) else {
         anyhow::bail!("unsupported key: {key}");
     };
-    let flags = if is_down {
+    let mut flags = if is_down {
         Default::default()
     } else {
         KEYEVENTF_KEYUP
     };
+    if is_extended_key(vk) {
+        flags |= KEYEVENTF_EXTENDEDKEY;
+    }
     let input = INPUT {
         r#type: INPUT_KEYBOARD,
         Anonymous: INPUT_0 {
@@ -128,5 +144,16 @@ mod tests {
     fn text_payloads_are_not_virtual_keys() {
         assert_eq!(text_payload("text:a"), Some("a"));
         assert_eq!(text_payload("enter"), None);
+    }
+
+    #[test]
+    fn navigation_keys_are_extended_keys() {
+        assert!(is_extended_key(0x25));
+        assert!(is_extended_key(0x26));
+        assert!(is_extended_key(0x27));
+        assert!(is_extended_key(0x28));
+        assert!(is_extended_key(0x2E));
+        assert!(!is_extended_key(0x41));
+        assert!(!is_extended_key(0x0D));
     }
 }
