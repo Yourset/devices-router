@@ -12,7 +12,7 @@ D:\development\随意开发\pc-tools\flow-keyboard-bridge
 当前主线版本：v0.1.19
 
 项目背景：
-这是一个 Windows 桌面工具，用来补齐 Logitech Flow 只带鼠标、不带普通键盘跟随的问题。核心需求是：主电脑和副电脑都运行 Devices Router，鼠标移动/活动在哪台电脑，键盘就尽量跟随到哪台电脑。用户的真实场景是 vibe coding 时可以用另一台电脑开发，主电脑可以继续处理游戏/LOL/窗口等事情，所以游戏模式必须保守，不要自动抢输入。
+这是一个 Windows 桌面工具，用来补齐 Logitech Flow 只带鼠标、不带普通键盘跟随的问题。核心需求是：主电脑和副电脑都运行 Devices Router，鼠标移动或活动在哪台电脑，键盘就尽量跟随到哪台电脑。用户的真实场景是 vibe coding 时可以用另一台电脑开发，主电脑可以继续处理游戏、LOL、窗口等事情，所以游戏模式必须保守，不要自动抢输入。
 
 当前技术栈：
 - 主线桌面版：Tauri 2 + Rust + TypeScript
@@ -22,6 +22,8 @@ D:\development\随意开发\pc-tools\flow-keyboard-bridge
   - apps/desktop-tauri/src/styles.css
   - apps/desktop-tauri/src-tauri/src/lib.rs
   - apps/desktop-tauri/src-tauri/src/core.rs
+  - apps/desktop-tauri/src-tauri/src/input.rs
+  - apps/desktop-tauri/src-tauri/src/keyboard_hook.rs
   - apps/desktop-tauri/src-tauri/src/config.rs
   - apps/desktop-tauri/src-tauri/src/discovery.rs
 
@@ -33,9 +35,15 @@ v0.1.19 已完成：
 - 游戏模式：关闭自动鼠标切换，避免游戏时误抢输入
 - 日志重复折叠
 - 网络诊断：本机 LAN IP、键盘端口检测、更新端口检测
-- 局域网自动更新包已能生成
+- 局域网自动更新包生成
+- 系统托盘状态灯
+- 管理员权限状态和以管理员身份重启
+- NumLock 忽略
+- PowerShell/IME 相关输入路径修复
+- uTools 等面板的方向键修复：导航键使用 scan code + extended key 注入
+- 主电脑修饰键残留修复：切到副电脑前主动释放 Ctrl/Alt/Shift/Win
 
-上一轮验证命令：
+验证命令：
 cd apps\desktop-tauri
 npm.cmd run build
 cd src-tauri
@@ -52,12 +60,18 @@ apps/desktop-tauri/src-tauri/target/release/bundle/nsis/Devices Router_0.1.19_x6
 apps/desktop-tauri/src-tauri/target/release/updates/DevicesRouter_0.1.19_x64_setup.exe
 apps/desktop-tauri/src-tauri/target/release/updates/manifest.json
 
+发布记录规则：
+- 每次发新版本都要写 docs/releases/vX.Y.Z.md。
+- release note 必须中英文双语。
+- release note 不只写“修了什么”，还要写“为什么会出现”和“怎么排查”。
+- 如果修的是输入、快捷键、权限、自动更新、布局遮挡等用户可感知问题，必须写清楚用户能看懂的原因。
+- 对应的 docs/troubleshooting.zh.md 和 docs/troubleshooting.en.md 也要同步更新，不要只更新一边。
+
 优先继续做的事：
 1. 真实手测主电脑/副电脑 v0.1.19 自动更新链路。
 2. 优化网络诊断，把“端口不可达”解释成用户能懂的建议，比如防火墙、IP 错、主电脑未启动。
 3. 完善日志区：复制折叠后日志与导出原始日志之间的关系要明确。
-4. 考虑真正系统托盘，而不是仅启动后最小化。
-5. 如果继续做鼠标转发，先写设计文档，不要直接大改核心输入链路。游戏模式下默认禁止鼠标转发。
+4. 如果继续做鼠标转发，先写设计文档，不要直接大改核心输入链路。游戏模式下默认禁止鼠标转发。
 
 注意事项：
 - 不要回滚用户或上一台电脑的未读改动。
