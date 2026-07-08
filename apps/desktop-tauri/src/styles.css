@@ -230,7 +230,13 @@ dd {
 .log-panel {
   min-height: 0;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
+.hint {
+  margin: -4px 0 10px;
+  color: #5a6678;
+  font-size: 13px;
 }
 
 .log-panel textarea {

@@ -172,7 +172,7 @@ async function refreshDiagnostics() {
 }
 
 async function copyLogs() {
-  const payload = status.logs.join("");
+  const payload = compactLogs(status.logs);
   try {
     await navigator.clipboard.writeText(payload);
   } catch {
@@ -307,6 +307,8 @@ function renderMouseTab() {
 
 function renderNetworkTab() {
   const info = diagnostics;
+  const tcpAdvice = portProbeAdvice(info?.tcpReachable, info?.targetHost, "keyboard");
+  const updateAdvice = portProbeAdvice(info?.updateReachable, info?.targetHost, "update");
   return `
     <section class="workspace">
       <article class="panel wide">
@@ -333,6 +335,7 @@ function renderNetworkTab() {
           ["检测目标", escapeHtml(info?.targetHost || "未填写，当前依赖自动发现")],
           ["键盘端口检测", portProbeLabel(info?.tcpReachable)],
           ["更新端口检测", portProbeLabel(info?.updateReachable)],
+          ["处理建议", escapeHtml([tcpAdvice, updateAdvice].filter(Boolean).join("；") || "端口可连接时，网络链路基本正常。")],
           ["运行模式", info ? modeLabel(info.runningMode) : "-"],
           ["连接状态", info?.connected ? "已连接" : "未连接"],
           ["键盘目标", info ? targetLabel(info.keyboardTarget) : "-"]
@@ -407,6 +410,7 @@ function renderLogs() {
           ${actionButton("download-logs", "导出", false)}
         </div>
       </div>
+      <p class="hint">复制会复制上面折叠后的日志；导出会保存原始完整日志，适合排查问题。</p>
       <textarea id="log-text" readonly spellcheck="false">${escapeHtml(compactLogs(status.logs) || "等待启动...")}</textarea>
     </section>
   `;
@@ -500,6 +504,13 @@ function portProbeLabel(value: boolean | null | undefined) {
   if (value === true) return "可连接";
   if (value === false) return "不可连接";
   return "未检测";
+}
+
+function portProbeAdvice(value: boolean | null | undefined, targetHost: string | null | undefined, kind: "keyboard" | "update") {
+  if (value !== false) return "";
+  if (!targetHost) return "先填写主电脑 IP，或开启自动寻找主电脑";
+  const service = kind === "keyboard" ? "主电脑模式" : "主电脑更新服务";
+  return `${kind === "keyboard" ? "键盘端口" : "更新端口"}不可连接：确认 ${targetHost} 上已启动 ${service}，两台电脑在同一局域网，Windows 防火墙允许 Devices Router`;
 }
 
 function compactLogs(logs: string[]) {
