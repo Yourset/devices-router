@@ -2,7 +2,7 @@
 
 ## Check Versions First
 
-Both PCs should ideally run the same version. The current mainline version is `v0.1.21`.
+Both PCs should ideally run the same version. The current mainline version is `v0.1.22`.
 
 Check the version on the overview page. If the remote is older, connect it to the host and let it update.
 
@@ -50,10 +50,10 @@ For example, pressing `A` may trigger screenshot, search, or another shortcut. T
 
 The cause is the switch path: the key-down for a switching shortcut may reach Windows before Devices Router starts suppressing host input, but the key-up can be suppressed after the keyboard target moves to the remote PC. Windows then keeps the modifier state logically down.
 
-Since `v0.1.21`, Devices Router sends local modifier key-up events before suppressing host input for remote control. If it still happens:
+Since `v0.1.20`, Devices Router sends local modifier key-up events before suppressing host input for remote control. If it still happens:
 
 1. Press and release `Ctrl`, `Alt`, `Shift`, and `Win` once to reset Windows state.
-2. Confirm both sides are on `v0.1.21` or newer.
+2. Confirm both sides are on `v0.1.22` or newer.
 3. Check the host logs for the switch-to-remote entry.
 
 ## Arrow Keys Do Not Work In uTools Or Similar Panels
@@ -62,9 +62,9 @@ If arrow keys work in normal fields or lists but not in uTools search results, t
 
 Older versions sent only virtual-key events. Some apps require navigation keys to look closer to physical keyboard input: `scan code + extended key`.
 
-Since `v0.1.21`, arrow keys, Home/End, PageUp/PageDown, Insert/Delete, and related navigation keys use scan-code based extended-key injection. If it still fails:
+Since `v0.1.19`, arrow keys, Home/End, PageUp/PageDown, Insert/Delete, and related navigation keys use scan-code based extended-key injection. Since `v0.1.22`, Enter, Tab, Esc, Backspace, Space, CapsLock, PrintScreen, F1-F12, and related function keys also use scan-code injection. If it still fails:
 
-1. Confirm the remote PC is on `v0.1.21` or newer.
+1. Confirm the remote PC is on `v0.1.22` or newer.
 2. Confirm the uTools window has focus.
 3. If uTools runs as administrator, run Devices Router as administrator on the same remote PC.
 4. Check the remote logs for `input key: <38>` or `input key: <40>`.
@@ -83,7 +83,7 @@ Steps:
 
 Check:
 
-- Both sides are on `v0.1.21` or newer.
+- Both sides are on `v0.1.22` or newer.
 - Mouse follow is enabled on the `Mouse follow` page.
 - After moving the mouse on the remote, remote logs mouse activity reporting.
 - Host logs remote mouse activity and switches the keyboard target.

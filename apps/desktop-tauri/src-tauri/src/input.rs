@@ -47,13 +47,17 @@ pub fn is_extended_key(vk: u16) -> bool {
 }
 
 pub fn should_use_scan_code(vk: u16) -> bool {
-    is_modifier_key(vk) || is_extended_key(vk)
+    !is_text_like_virtual_key(vk) || is_extended_key(vk)
 }
 
-fn is_modifier_key(vk: u16) -> bool {
+fn is_text_like_virtual_key(vk: u16) -> bool {
     matches!(
         vk,
-        0x10 | 0xA0 | 0xA1 | 0x11 | 0xA2 | 0xA3 | 0x12 | 0xA4 | 0xA5 | 0x5B | 0x5C
+        0x30..=0x39 // 0-9
+            | 0x41..=0x5A // A-Z
+            | 0xBA..=0xC0 // OEM punctuation
+            | 0xDB..=0xDF // OEM punctuation
+            | 0xE2 // OEM backslash / angle bracket on some layouts
     )
 }
 
@@ -214,6 +218,26 @@ mod tests {
         assert!(is_extended_key(0x2E));
         assert!(!is_extended_key(0x41));
         assert!(!is_extended_key(0x0D));
+    }
+
+    #[test]
+    fn functional_keys_use_scan_codes() {
+        for vk in [
+            0x08, // Backspace
+            0x09, // Tab
+            0x0D, // Enter
+            0x14, // CapsLock
+            0x1B, // Escape
+            0x20, // Space
+            0x2C, // PrintScreen
+            0x2D, // Insert
+            0x2E, // Delete
+        ] {
+            assert!(should_use_scan_code(vk), "vk {vk} should use scan code");
+        }
+        for vk in 0x70..=0x7B {
+            assert!(should_use_scan_code(vk), "F-key vk {vk} should use scan code");
+        }
     }
 
     #[test]
