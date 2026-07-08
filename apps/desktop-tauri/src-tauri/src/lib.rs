@@ -2,11 +2,13 @@ mod app_state;
 mod config;
 mod core;
 mod discovery;
+mod elevation;
 mod input;
 mod keyboard_hook;
 mod mouse;
 mod protocol;
 mod startup;
+mod tray;
 mod updates;
 
 use app_state::{AppMode, AppStatus, KeyboardTarget, SharedState};
@@ -37,6 +39,13 @@ struct NetworkDiagnostics {
 #[tauri::command]
 fn app_status(state: tauri::State<SharedState>) -> AppStatus {
     state.snapshot()
+}
+
+#[tauri::command]
+fn restart_as_admin(app: tauri::AppHandle) -> Result<(), String> {
+    elevation::restart_as_admin().map_err(|err| err.to_string())?;
+    app.exit(0);
+    Ok(())
 }
 
 #[tauri::command]
@@ -297,6 +306,7 @@ pub fn run() {
             let autostart =
                 arg_mode.or_else(|| resolve_startup_mode(&config.startup_mode, &config.last_mode));
             app.manage(state.clone());
+            tray::install_tray(app, state.clone())?;
             if config.minimize_to_tray {
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.minimize();
@@ -314,6 +324,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             app_status,
+            restart_as_admin,
             start_mode,
             stop_mode,
             clear_logs,

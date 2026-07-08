@@ -4,15 +4,17 @@ use std::sync::mpsc::Sender;
 use std::sync::{Mutex, OnceLock};
 use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyboardState, ToUnicode};
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, DispatchMessageW, GetMessageW, SetWindowsHookExW, TranslateMessage,
     KBDLLHOOKSTRUCT, MSG, WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawKeyEvent {
     pub vk_code: u32,
     pub is_down: bool,
+    pub text: Option<String>,
 }
 
 static KEY_SENDER: OnceLock<Mutex<Option<Sender<RawKeyEvent>>>> = OnceLock::new();
@@ -50,6 +52,7 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
                     let _ = sender.send(RawKeyEvent {
                         vk_code: info.vkCode,
                         is_down,
+                        text: if is_down { key_text(&info) } else { None },
                     });
                 }
             }
@@ -61,6 +64,39 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
     CallNextHookEx(None, code, wparam, lparam)
 }
 
+fn key_text(info: &KBDLLHOOKSTRUCT) -> Option<String> {
+    let mut state = [0_u8; 256];
+    if unsafe { GetKeyboardState(&mut state) }.is_err() {
+        return None;
+    }
+    normalize_text_keyboard_state(&mut state);
+    if ctrl_or_alt_down(&state) {
+        return None;
+    }
+
+    let mut buffer = [0_u16; 8];
+    let count = unsafe { ToUnicode(info.vkCode, info.scanCode, Some(&state), &mut buffer, 0) };
+    if count <= 0 {
+        return None;
+    }
+    String::from_utf16(&buffer[..count as usize])
+        .ok()
+        .filter(|text| !text.chars().any(char::is_control))
+}
+
+fn ctrl_or_alt_down(state: &[u8; 256]) -> bool {
+    key_is_down(state, 0x11) || key_is_down(state, 0x12)
+}
+
+fn key_is_down(state: &[u8; 256], vk: usize) -> bool {
+    state[vk] & 0x80 != 0
+}
+
+fn normalize_text_keyboard_state(state: &mut [u8; 256]) {
+    const VK_NUMLOCK: usize = 0x90;
+    state[VK_NUMLOCK] = 0;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -70,10 +106,12 @@ mod tests {
         let event = RawKeyEvent {
             vk_code: 65,
             is_down: true,
+            text: Some("a".to_string()),
         };
 
         assert_eq!(event.vk_code, 65);
         assert!(event.is_down);
+        assert_eq!(event.text.as_deref(), Some("a"));
     }
 
     #[test]
@@ -82,5 +120,15 @@ mod tests {
         assert!(SUPPRESS_KEYS.load(Ordering::SeqCst));
         set_key_suppression(false);
         assert!(!SUPPRESS_KEYS.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn text_keyboard_state_ignores_num_lock_toggle() {
+        let mut state = [0_u8; 256];
+        state[0x90] = 0x81;
+
+        normalize_text_keyboard_state(&mut state);
+
+        assert_eq!(state[0x90], 0);
     }
 }

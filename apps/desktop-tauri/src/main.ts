@@ -14,6 +14,7 @@ type AppStatus = {
   running: boolean;
   connected: boolean;
   target: KeyboardTarget;
+  elevated: boolean;
   logs: string[];
   config: {
     tcpPort: number;
@@ -71,6 +72,7 @@ let status: AppStatus = {
   running: false,
   connected: false,
   target: "local",
+  elevated: false,
   logs: [],
   config: {
     tcpPort: 8765,
@@ -131,6 +133,10 @@ async function saveRemoteHost() {
 
 async function setKeyboardTarget(target: KeyboardTarget) {
   await runAction(`target-${target}`, () => invoke("set_keyboard_target", { target }));
+}
+
+async function restartAsAdmin() {
+  await runAction("restart-admin", () => invoke("restart_as_admin"));
 }
 
 async function setTheme(theme: Theme) {
@@ -260,8 +266,10 @@ function renderOverviewTab() {
         ${definitionList([
           ["模式", modeLabel(status.mode)],
           ["连接", status.connected ? "已连接" : "未连接"],
-          ["键盘目标", targetLabel(status.target)]
+          ["键盘目标", targetLabel(status.target)],
+          ["管理员权限", status.elevated ? "已开启" : "未开启"]
         ])}
+        ${renderElevationHint()}
       </article>
       <article class="panel wide">
         <h2>键盘切换</h2>
@@ -430,6 +438,7 @@ function bindEvents() {
   onClick("save-host", saveRemoteHost);
   onClick("target-local", () => setKeyboardTarget("local"));
   onClick("target-remote", () => setKeyboardTarget("remote"));
+  onClick("restart-admin", restartAsAdmin);
   onClick("start-login", () => setStartOnLogin(!status.config.startOnLogin));
   onClick("restore-last-mode", () => setRestoreLastMode(!status.config.restoreLastMode));
   onClick("startup-last", () => setStartupMode("last"));
@@ -494,6 +503,17 @@ function modeLabel(mode: AppMode) {
 
 function targetLabel(target: KeyboardTarget) {
   return target === "remote" ? "副电脑" : "主电脑";
+}
+
+function renderElevationHint() {
+  if (status.elevated) return "";
+  return `
+    <div class="notice">
+      <strong>控制管理员窗口需要管理员权限</strong>
+      <p>如果副电脑上的 PowerShell、Terminal 或 IDE 是管理员身份运行，Devices Router 也需要管理员身份运行。</p>
+      ${actionButton("restart-admin", "以管理员身份重启", false)}
+    </div>
+  `;
 }
 
 function onOff(enabled: boolean) {

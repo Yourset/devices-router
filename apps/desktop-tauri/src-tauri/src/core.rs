@@ -186,7 +186,7 @@ fn handle_host_client(
             last_heartbeat = Instant::now();
         }
         while let Ok(event) = key_rx.try_recv() {
-            update_modifier_state(event, &mut ctrl_down, &mut alt_down);
+            update_modifier_state(&event, &mut ctrl_down, &mut alt_down);
             if event.is_down && ctrl_down && alt_down && event.vk_code == 0x31 {
                 apply_host_target(
                     runtime,
@@ -210,13 +210,16 @@ fn handle_host_client(
             if runtime.target() != KeyboardTarget::Remote {
                 continue;
             }
+            let Some(key) = remote_key_payload(&event) else {
+                continue;
+            };
             let payload = BridgeEvent::Key {
                 action: if event.is_down {
                     KeyAction::Down
                 } else {
                     KeyAction::Up
                 },
-                key: format!("<{}>", event.vk_code),
+                key,
             };
             match encode_event(&payload).and_then(|bytes| {
                 writer.write_all(&bytes)?;
@@ -226,10 +229,10 @@ fn handle_host_client(
                     if forwarded_key_logs < 5 {
                         forwarded_key_logs += 1;
                         let action = if event.is_down { "按下" } else { "松开" };
-                        runtime.log(format!(
-                            "[主电脑] 已转发按键：<{vk}> {action}\n",
-                            vk = event.vk_code
-                        ));
+                        let BridgeEvent::Key { key, .. } = &payload else {
+                            unreachable!();
+                        };
+                        runtime.log(format!("[主电脑] 已转发按键：{key} {action}\n"));
                     }
                 }
                 Err(err) => {
@@ -300,12 +303,20 @@ fn handle_host_client(
     }
 }
 
-fn update_modifier_state(event: RawKeyEvent, ctrl_down: &mut bool, alt_down: &mut bool) {
+fn update_modifier_state(event: &RawKeyEvent, ctrl_down: &mut bool, alt_down: &mut bool) {
     match event.vk_code {
         0x11 | 0xA2 | 0xA3 => *ctrl_down = event.is_down,
         0x12 | 0xA4 | 0xA5 => *alt_down = event.is_down,
         _ => {}
     }
+}
+
+fn remote_key_payload(event: &RawKeyEvent) -> Option<String> {
+    const VK_NUMLOCK: u32 = 0x90;
+    if event.vk_code == VK_NUMLOCK {
+        return None;
+    }
+    Some(format!("<{}>", event.vk_code))
 }
 
 fn apply_host_target(
@@ -555,5 +566,49 @@ fn run_remote_mouse_loop(runtime: Arc<AppRuntime>, event_tx: mpsc::Sender<Bridge
             activity_logs += 1;
             runtime.log("[副电脑] 已上报鼠标活动给主电脑\n");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remote_payload_ignores_num_lock() {
+        let event = RawKeyEvent {
+            vk_code: 0x90,
+            is_down: true,
+            text: None,
+        };
+
+        assert_eq!(remote_key_payload(&event), None);
+    }
+
+    #[test]
+    fn remote_payload_keeps_vk_even_when_text_is_available() {
+        let down = RawKeyEvent {
+            vk_code: 0x41,
+            is_down: true,
+            text: Some("a".to_string()),
+        };
+        let up = RawKeyEvent {
+            vk_code: 0x41,
+            is_down: false,
+            text: Some("a".to_string()),
+        };
+
+        assert_eq!(remote_key_payload(&down), Some("<65>".to_string()));
+        assert_eq!(remote_key_payload(&up), Some("<65>".to_string()));
+    }
+
+    #[test]
+    fn remote_payload_keeps_non_text_keys() {
+        let event = RawKeyEvent {
+            vk_code: 0x09,
+            is_down: true,
+            text: None,
+        };
+
+        assert_eq!(remote_key_payload(&event), Some("<9>".to_string()));
     }
 }

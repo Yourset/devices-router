@@ -57,6 +57,7 @@ pub struct AppStatus {
     pub running: bool,
     pub connected: bool,
     pub target: KeyboardTarget,
+    pub elevated: bool,
     pub logs: Vec<String>,
     pub config: AppConfig,
 }
@@ -127,6 +128,7 @@ impl SharedState {
             running: inner.mode != AppMode::Idle,
             connected: inner.connected,
             target: inner.target,
+            elevated: crate::elevation::is_elevated(),
             logs: inner.logs.iter().cloned().collect(),
             config: inner.config.clone(),
         }

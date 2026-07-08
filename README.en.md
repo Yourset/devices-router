@@ -4,13 +4,13 @@ A small Windows utility that adds keyboard following to Logitech Flow setups.
 
 Logitech Flow keeps handling cross-computer mouse movement. Devices Router forwards keyboard input from the host PC to the remote PC. The intended experience is simple: start the app on both machines, move the mouse to a machine, and the keyboard follows.
 
-Language / 语言: [简体中文](README.md) | **English**
+Language / 璇█: [绠€浣撲腑鏂嘳(README.md) | **English**
 
 ## Current Status
 
 - Platform: Windows -> Windows
 - Main implementation: Tauri/Rust desktop app in `apps/desktop-tauri/`
-- Current version: `v0.1.13`
+- Current version: `v0.1.17`
 - For normal users: install the `.exe` setup package. Node.js, Rust, Python, and other development dependencies are not required.
 - Ports:
   - TCP `8765`: keyboard events, control messages, heartbeat
@@ -126,11 +126,11 @@ A browser page cannot inject system-level keyboard input into other Windows appl
 
 ## Docs
 
-- [中文使用教程](docs/user-guide.zh.md)
+- [涓枃浣跨敤鏁欑▼](docs/user-guide.zh.md)
 - [English User Guide](docs/user-guide.en.md)
-- [中文排障手册](docs/troubleshooting.zh.md)
+- [涓枃鎺掗殰鎵嬪唽](docs/troubleshooting.zh.md)
 - [English Troubleshooting](docs/troubleshooting.en.md)
-- [中文视频脚本提纲](docs/video-outline.zh.md)
+- [涓枃瑙嗛鑴氭湰鎻愮翰](docs/video-outline.zh.md)
 - [English Video Outline](docs/video-outline.en.md)
 
 ## Known Limits

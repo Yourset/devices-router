@@ -1,8 +1,12 @@
 #[cfg(windows)]
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    MapVirtualKeyW, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
-    KEYEVENTF_SCANCODE, MAPVK_VK_TO_VSC, VIRTUAL_KEY,
+    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE,
+    VIRTUAL_KEY,
 };
+
+pub fn text_payload(key: &str) -> Option<&str> {
+    key.strip_prefix("text:").filter(|text| !text.is_empty())
+}
 
 pub fn key_name_to_vk(key: &str) -> Option<u16> {
     if let Some(raw) = key
@@ -31,11 +35,52 @@ pub fn key_name_to_vk(key: &str) -> Option<u16> {
 
 #[cfg(windows)]
 pub fn send_key_event(key: &str, is_down: bool) -> anyhow::Result<()> {
+    if let Some(text) = text_payload(key) {
+        if is_down {
+            send_text(text)?;
+        }
+        return Ok(());
+    }
+
     let Some(vk) = key_name_to_vk(key) else {
         anyhow::bail!("unsupported key: {key}");
     };
-    let scan_code = unsafe { MapVirtualKeyW(vk as u32, MAPVK_VK_TO_VSC) };
-    let flags = KEYEVENTF_SCANCODE
+    let flags = if is_down {
+        Default::default()
+    } else {
+        KEYEVENTF_KEYUP
+    };
+    let input = INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: VIRTUAL_KEY(vk),
+                wScan: 0,
+                dwFlags: flags,
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    };
+    let sent = unsafe { SendInput(&mut [input], std::mem::size_of::<INPUT>() as i32) };
+    if sent != 1 {
+        anyhow::bail!("SendInput failed");
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn send_text(text: &str) -> anyhow::Result<()> {
+    for code_unit in text.encode_utf16() {
+        send_unicode_unit(code_unit, true)?;
+        send_unicode_unit(code_unit, false)?;
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn send_unicode_unit(code_unit: u16, is_down: bool) -> anyhow::Result<()> {
+    let flags = KEYEVENTF_UNICODE
         | if is_down {
             Default::default()
         } else {
@@ -46,7 +91,7 @@ pub fn send_key_event(key: &str, is_down: bool) -> anyhow::Result<()> {
         Anonymous: INPUT_0 {
             ki: KEYBDINPUT {
                 wVk: VIRTUAL_KEY(0),
-                wScan: scan_code as u16,
+                wScan: code_unit,
                 dwFlags: flags,
                 time: 0,
                 dwExtraInfo: 0,
@@ -55,7 +100,7 @@ pub fn send_key_event(key: &str, is_down: bool) -> anyhow::Result<()> {
     };
     let sent = unsafe { SendInput(&mut [input], std::mem::size_of::<INPUT>() as i32) };
     if sent != 1 {
-        anyhow::bail!("SendInput failed");
+        anyhow::bail!("SendInput text failed");
     }
     Ok(())
 }
@@ -77,5 +122,11 @@ mod tests {
     #[test]
     fn maps_named_key() {
         assert_eq!(key_name_to_vk("enter"), Some(0x0D));
+    }
+
+    #[test]
+    fn text_payloads_are_not_virtual_keys() {
+        assert_eq!(text_payload("text:a"), Some("a"));
+        assert_eq!(text_payload("enter"), None);
     }
 }
