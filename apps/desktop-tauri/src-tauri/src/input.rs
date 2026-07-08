@@ -46,6 +46,17 @@ pub fn is_extended_key(vk: u16) -> bool {
     )
 }
 
+pub fn should_use_scan_code(vk: u16) -> bool {
+    is_modifier_key(vk) || is_extended_key(vk)
+}
+
+fn is_modifier_key(vk: u16) -> bool {
+    matches!(
+        vk,
+        0x10 | 0xA0 | 0xA1 | 0x11 | 0xA2 | 0xA3 | 0x12 | 0xA4 | 0xA5 | 0x5B | 0x5C
+    )
+}
+
 #[cfg(windows)]
 pub fn send_key_event(key: &str, is_down: bool) -> anyhow::Result<()> {
     if let Some(text) = text_payload(key) {
@@ -58,7 +69,7 @@ pub fn send_key_event(key: &str, is_down: bool) -> anyhow::Result<()> {
     let Some(vk) = key_name_to_vk(key) else {
         anyhow::bail!("unsupported key: {key}");
     };
-    if is_extended_key(vk) {
+    if should_use_scan_code(vk) {
         return send_scan_key(vk, is_down);
     }
 
@@ -107,7 +118,10 @@ fn send_scan_key(vk: u16, is_down: bool) -> anyhow::Result<()> {
     if scan_code == 0 {
         anyhow::bail!("unsupported scan code for virtual key: {vk}");
     }
-    let mut flags = KEYEVENTF_SCANCODE | KEYEVENTF_EXTENDEDKEY;
+    let mut flags = KEYEVENTF_SCANCODE;
+    if is_extended_key(vk) {
+        flags |= KEYEVENTF_EXTENDEDKEY;
+    }
     if !is_down {
         flags |= KEYEVENTF_KEYUP;
     }
@@ -200,5 +214,23 @@ mod tests {
         assert!(is_extended_key(0x2E));
         assert!(!is_extended_key(0x41));
         assert!(!is_extended_key(0x0D));
+    }
+
+    #[test]
+    fn modifiers_use_scan_codes_without_being_extended() {
+        assert!(should_use_scan_code(0x10));
+        assert!(should_use_scan_code(0xA0));
+        assert!(should_use_scan_code(0xA1));
+        assert!(should_use_scan_code(0x11));
+        assert!(should_use_scan_code(0x12));
+        assert!(!is_extended_key(0x10));
+        assert!(!is_extended_key(0xA0));
+        assert!(!is_extended_key(0xA1));
+    }
+
+    #[test]
+    fn regular_letters_stay_on_virtual_key_path() {
+        assert!(!should_use_scan_code(0x41));
+        assert!(!should_use_scan_code(0x31));
     }
 }

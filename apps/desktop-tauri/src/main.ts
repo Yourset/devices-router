@@ -60,6 +60,7 @@ type NetworkDiagnostics = {
 const app = document.querySelector<HTMLDivElement>("#app");
 if (!app) throw new Error("Missing app root");
 const appRoot = app;
+const STATUS_REFRESH_MS = 1000;
 
 let activeTab: Tab = "overview";
 let autoFollowLogs = true;
@@ -203,6 +204,7 @@ function downloadLogs() {
 }
 
 function render() {
+  if (document.activeElement instanceof HTMLInputElement) return;
   const oldLog = document.querySelector<HTMLTextAreaElement>("#log-text");
   const oldScrollTop = oldLog?.scrollTop ?? 0;
   const wasAtBottom = oldLog ? oldLog.scrollTop + oldLog.clientHeight >= oldLog.scrollHeight - 24 : true;
@@ -575,4 +577,4 @@ function escapeHtml(value: string) {
 
 render();
 refreshStatus();
-setInterval(refreshStatus, 200);
+setInterval(refreshStatus, STATUS_REFRESH_MS);
