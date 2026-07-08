@@ -10,7 +10,7 @@ Logitech Flow 继续负责鼠标跨电脑移动，Devices Router 负责把主电
 
 - 平台：Windows -> Windows
 - 当前主线版本：Tauri/Rust 桌面版，源码在 `apps/desktop-tauri/`
-- 当前版本：`v0.1.20`
+- 当前版本：`v0.1.21`
 - 普通用户：下载并安装 `.exe` 安装包即可，不需要安装 Node.js、Rust、Python 或其它开发依赖。
 - 连接端口：
   - TCP `8765`：键盘、控制消息、心跳

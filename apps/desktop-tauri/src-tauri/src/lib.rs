@@ -101,6 +101,7 @@ fn set_keyboard_target(target: String, state: tauri::State<SharedState>) -> Resu
             target: target_side,
         }) {
             runtime.log(format!("[副电脑] 切换请求已发出：键盘到{label}\n"));
+            runtime.log("[副电脑] 正在等待主电脑确认键盘目标\n");
         } else {
             runtime.log("[副电脑] 切换请求未发出：当前没有可用的主电脑连接\n");
         }

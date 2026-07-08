@@ -255,8 +255,9 @@ fn handle_host_client(
             Ok(_) => match decode_event(line.as_bytes()) {
                 Ok(BridgeEvent::TargetRequest { target }) => match target {
                     TargetSide::Local => {
-                        apply_host_target(
+                        apply_host_target_and_notify(
                             runtime,
+                            &mut writer,
                             KeyboardTarget::Local,
                             "[主电脑] 副电脑请求：键盘回主电脑\n",
                             false,
@@ -264,8 +265,9 @@ fn handle_host_client(
                         last_switch = Instant::now();
                     }
                     TargetSide::Remote => {
-                        apply_host_target(
+                        apply_host_target_and_notify(
                             runtime,
+                            &mut writer,
                             KeyboardTarget::Remote,
                             "[主电脑] 副电脑请求：键盘到副电脑\n",
                             false,
@@ -285,6 +287,7 @@ fn handle_host_client(
                             "[主电脑] 副电脑鼠标活动：键盘到副电脑\n",
                             true,
                         ) {
+                            send_target_state(runtime, &mut writer);
                             last_switch = Instant::now();
                         }
                     }
@@ -340,6 +343,34 @@ fn apply_host_target(
         runtime.log(log_line);
     }
     changed
+}
+
+fn apply_host_target_and_notify(
+    runtime: &Arc<AppRuntime>,
+    writer: &mut TcpStream,
+    target: KeyboardTarget,
+    log_line: &str,
+    log_only_on_change: bool,
+) -> bool {
+    let changed = apply_host_target(runtime, target, log_line, log_only_on_change);
+    if changed || !log_only_on_change {
+        send_target_state(runtime, writer);
+    }
+    changed
+}
+
+fn send_target_state(runtime: &Arc<AppRuntime>, writer: &mut TcpStream) {
+    let target = match runtime.target() {
+        KeyboardTarget::Local => TargetSide::Local,
+        KeyboardTarget::Remote => TargetSide::Remote,
+    };
+    let event = BridgeEvent::TargetState { target };
+    if let Err(err) = encode_event(&event).and_then(|bytes| {
+        writer.write_all(&bytes)?;
+        Ok(())
+    }) {
+        runtime.log(format!("[主电脑] 键盘目标状态同步失败：{err:#}\n"));
+    }
 }
 
 fn run_host_mouse_loop(runtime: Arc<AppRuntime>) {
@@ -471,6 +502,18 @@ fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
                                         "[副电脑] 已输入按键：{key} {action_label}\n"
                                     ));
                                 }
+                            }
+                            Ok(BridgeEvent::TargetState { target }) => {
+                                let target = match target {
+                                    TargetSide::Local => KeyboardTarget::Local,
+                                    TargetSide::Remote => KeyboardTarget::Remote,
+                                };
+                                runtime.set_target(target);
+                                let label = match target {
+                                    KeyboardTarget::Local => "主电脑",
+                                    KeyboardTarget::Remote => "副电脑",
+                                };
+                                runtime.log(format!("[副电脑] 主电脑确认键盘目标：{label}\n"));
                             }
                             Ok(BridgeEvent::Ping { .. }) => {}
                             Ok(other) => runtime.log(format!("[副电脑] 收到消息：{other:?}\n")),

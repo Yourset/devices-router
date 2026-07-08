@@ -7,6 +7,7 @@ pub enum BridgeEvent {
     Ping { message: String },
     MouseActivity { source: MouseSource },
     TargetRequest { target: TargetSide },
+    TargetState { target: TargetSide },
     Key { action: KeyAction, key: String },
 }
 
@@ -106,6 +107,17 @@ mod tests {
     fn target_request_round_trips() {
         let event = BridgeEvent::TargetRequest {
             target: TargetSide::Remote,
+        };
+
+        let payload = encode_event(&event).unwrap();
+
+        assert_eq!(decode_event(&payload).unwrap(), event);
+    }
+
+    #[test]
+    fn target_state_round_trips() {
+        let event = BridgeEvent::TargetState {
+            target: TargetSide::Local,
         };
 
         let payload = encode_event(&event).unwrap();
