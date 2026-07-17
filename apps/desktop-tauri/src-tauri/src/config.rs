@@ -44,6 +44,7 @@ pub struct AppConfig {
     pub minimize_to_tray: bool,
     pub auto_discovery: bool,
     pub game_mode: bool,
+    pub experimental_mouse_input: bool,
     pub theme: String,
 }
 
@@ -63,6 +64,7 @@ impl Default for AppConfig {
             minimize_to_tray: false,
             auto_discovery: true,
             game_mode: false,
+            experimental_mouse_input: false,
             theme: "light".to_string(),
         }
     }
@@ -179,6 +181,7 @@ mod tests {
         assert_eq!(AppConfig::default().theme, "light");
         assert!(AppConfig::default().restore_last_mode);
         assert!(AppConfig::default().auto_discovery);
+        assert!(!AppConfig::default().experimental_mouse_input);
         assert_eq!(AppConfig::default().startup_mode, "last");
         assert_eq!(AppConfig::default().mouse_sensitivity, "balanced");
     }

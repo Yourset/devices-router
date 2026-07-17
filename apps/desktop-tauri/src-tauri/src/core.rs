@@ -1,10 +1,15 @@
 use crate::app_state::{AppMode, AppRuntime, KeyboardTarget};
+use crate::config::AppConfig;
 use crate::discovery::{broadcast_host, discover_host, scan_local_network};
-use crate::input::{release_local_modifiers, send_key_event};
+use crate::input::{release_local_modifiers, send_key_event, send_mouse_input_event};
 use crate::keyboard_hook::{run_keyboard_hook, set_key_suppression, RawKeyEvent};
-use crate::mouse::cursor_position;
+use crate::mouse::{
+    at_left_edge, at_right_edge, cursor_position, mouse_button_state, screen_center,
+    set_cursor_position, virtual_screen_rect, MouseButtonState,
+};
 use crate::protocol::{
-    decode_event, encode_event, BridgeEvent, ClientRole, KeyAction, MouseSource, TargetSide,
+    decode_event, encode_event, BridgeEvent, ClientRole, KeyAction, MouseButton, MouseButtonAction,
+    MouseInputEvent, MouseSource, TargetSide,
 };
 use crate::updates::{check_remote_update, host_from_socket_addr, start_update_server};
 use anyhow::{Context, Result};
@@ -170,6 +175,11 @@ fn handle_host_client(
     let mut last_switch = Instant::now()
         .checked_sub(Duration::from_millis(500))
         .unwrap_or_else(Instant::now);
+    let mut last_mouse_pos = cursor_position().ok();
+    let mut last_mouse_crossing = Instant::now()
+        .checked_sub(Duration::from_secs(2))
+        .unwrap_or_else(Instant::now);
+    let mut last_mouse_buttons = MouseButtonState::default();
     let mut last_heartbeat = Instant::now();
     while !runtime.should_stop() {
         if last_heartbeat.elapsed() >= HEARTBEAT_INTERVAL {
@@ -240,6 +250,70 @@ fn handle_host_client(
                     return;
                 }
             }
+        }
+
+        if let Some(current_pos) = cursor_position().ok() {
+            let config = runtime.config();
+            if should_accept_mouse_input(&config) {
+                let screen = virtual_screen_rect();
+                let center = screen_center(screen);
+                let moving_right = last_mouse_pos.is_some_and(|last| current_pos.x > last.x);
+                if runtime.target() == KeyboardTarget::Local
+                    && moving_right
+                    && at_right_edge(current_pos, screen, 2)
+                    && last_mouse_crossing.elapsed() >= Duration::from_millis(600)
+                {
+                    let remote_y = screen.y_permille(current_pos.y);
+                    apply_host_target_and_notify(
+                        runtime,
+                        &mut writer,
+                        KeyboardTarget::Remote,
+                        "[host] mouse crossed right edge: keyboard and mouse to remote\n",
+                        true,
+                    );
+                    let event = BridgeEvent::MouseInput {
+                        event: MouseInputEvent::MoveToLeftEdge {
+                            y_permille: remote_y,
+                        },
+                    };
+                    if let Err(err) = encode_event(&event).and_then(|bytes| {
+                        writer.write_all(&bytes)?;
+                        Ok(())
+                    }) {
+                        runtime.log(format!(
+                            "[host] failed to send remote mouse entry: {err:#}\n"
+                        ));
+                        return;
+                    }
+                    last_switch = Instant::now();
+                    last_mouse_crossing = Instant::now();
+                    let _ = set_cursor_position(center);
+                    last_mouse_pos = Some(center);
+                    last_mouse_buttons = mouse_button_state();
+                    continue;
+                }
+                if runtime.target() == KeyboardTarget::Remote {
+                    let dx = current_pos.x - center.x;
+                    let dy = current_pos.y - center.y;
+                    if dx != 0 || dy != 0 {
+                        send_bridge_event(
+                            runtime,
+                            &mut writer,
+                            BridgeEvent::MouseInput {
+                                event: MouseInputEvent::MoveRelative { dx, dy },
+                            },
+                            "[host] failed to forward remote mouse movement",
+                        );
+                        let _ = set_cursor_position(center);
+                        last_mouse_pos = Some(center);
+                    }
+                    let buttons = mouse_button_state();
+                    forward_mouse_button_changes(runtime, &mut writer, last_mouse_buttons, buttons);
+                    last_mouse_buttons = buttons;
+                    continue;
+                }
+            }
+            last_mouse_pos = Some(current_pos);
         }
 
         line.clear();
@@ -373,6 +447,74 @@ fn send_target_state(runtime: &Arc<AppRuntime>, writer: &mut TcpStream) {
     }
 }
 
+fn send_bridge_event(
+    runtime: &Arc<AppRuntime>,
+    writer: &mut TcpStream,
+    event: BridgeEvent,
+    error_prefix: &str,
+) {
+    if let Err(err) = encode_event(&event).and_then(|bytes| {
+        writer.write_all(&bytes)?;
+        Ok(())
+    }) {
+        runtime.log(format!("{error_prefix}: {err:#}\n"));
+    }
+}
+
+fn forward_mouse_button_changes(
+    runtime: &Arc<AppRuntime>,
+    writer: &mut TcpStream,
+    previous: MouseButtonState,
+    current: MouseButtonState,
+) {
+    forward_mouse_button_change(
+        runtime,
+        writer,
+        MouseButton::Left,
+        previous.left,
+        current.left,
+    );
+    forward_mouse_button_change(
+        runtime,
+        writer,
+        MouseButton::Right,
+        previous.right,
+        current.right,
+    );
+    forward_mouse_button_change(
+        runtime,
+        writer,
+        MouseButton::Middle,
+        previous.middle,
+        current.middle,
+    );
+}
+
+fn forward_mouse_button_change(
+    runtime: &Arc<AppRuntime>,
+    writer: &mut TcpStream,
+    button: MouseButton,
+    was_down: bool,
+    is_down: bool,
+) {
+    if was_down == is_down {
+        return;
+    }
+    let action = if is_down {
+        MouseButtonAction::Down
+    } else {
+        MouseButtonAction::Up
+    };
+    send_bridge_event(
+        runtime,
+        writer,
+        BridgeEvent::MouseInput {
+            event: MouseInputEvent::Button { button, action },
+        },
+        "[host] failed to forward remote mouse button",
+    );
+}
+
 fn run_host_mouse_loop(runtime: Arc<AppRuntime>) {
     let Ok(mut last) = cursor_position() else {
         runtime.log("[主电脑] 鼠标监听不可用\n");
@@ -387,6 +529,7 @@ fn run_host_mouse_loop(runtime: Arc<AppRuntime>) {
             config.mouse_follow.host_poll_interval_ms,
         ));
         if config.game_mode
+            || config.experimental_mouse_input
             || !config.mouse_follow.enabled
             || !config.mouse_follow.host_mouse_returns_local
         {
@@ -515,6 +658,18 @@ fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
                                 };
                                 runtime.log(format!("[副电脑] 主电脑确认键盘目标：{label}\n"));
                             }
+                            Ok(BridgeEvent::MouseInput { event }) => {
+                                let config = runtime.config();
+                                if !should_accept_mouse_input(&config) {
+                                    runtime.log("[remote] ignored mouse input: experimental mouse input is disabled or game mode is active\n");
+                                    continue;
+                                }
+                                if let Err(err) = send_mouse_input_event(&event) {
+                                    runtime.log(format!(
+                                        "[remote] ignored mouse input injection failure: {err:#}\n"
+                                    ));
+                                }
+                            }
                             Ok(BridgeEvent::Ping { .. }) => {}
                             Ok(other) => runtime.log(format!("[副电脑] 收到消息：{other:?}\n")),
                             Err(err) => runtime.log(format!("[副电脑] 已忽略异常消息：{err:#}\n")),
@@ -535,6 +690,10 @@ fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn should_accept_mouse_input(config: &AppConfig) -> bool {
+    config.experimental_mouse_input && !config.game_mode
 }
 
 fn resolve_remote_target(runtime: &Arc<AppRuntime>) -> Option<String> {
@@ -585,6 +744,9 @@ fn run_remote_mouse_loop(runtime: Arc<AppRuntime>, event_tx: mpsc::Sender<Bridge
         return;
     };
     let mut activity_logs = 0_u8;
+    let mut last_return_request = Instant::now()
+        .checked_sub(Duration::from_secs(2))
+        .unwrap_or_else(Instant::now);
     while !runtime.should_stop() {
         let config = runtime.config();
         thread::sleep(Duration::from_millis(
@@ -601,6 +763,24 @@ fn run_remote_mouse_loop(runtime: Arc<AppRuntime>, event_tx: mpsc::Sender<Bridge
         };
         if current == last {
             continue;
+        }
+        let config = runtime.config();
+        if should_accept_mouse_input(&config)
+            && runtime.target() == KeyboardTarget::Remote
+            && current.x < last.x
+            && at_left_edge(current, virtual_screen_rect(), 2)
+            && last_return_request.elapsed() >= Duration::from_millis(600)
+        {
+            if event_tx
+                .send(BridgeEvent::TargetRequest {
+                    target: TargetSide::Local,
+                })
+                .is_err()
+            {
+                runtime.log("[remote] mouse return request stopped, waiting for reconnect\n");
+                return;
+            }
+            last_return_request = Instant::now();
         }
         last = current;
         let event = BridgeEvent::MouseActivity {
@@ -619,6 +799,8 @@ fn run_remote_mouse_loop(runtime: Arc<AppRuntime>, event_tx: mpsc::Sender<Bridge
 
 #[cfg(test)]
 mod tests {
+    use crate::config::AppConfig;
+
     use super::*;
 
     #[test]
@@ -658,5 +840,17 @@ mod tests {
         };
 
         assert_eq!(remote_key_payload(&event), Some("<9>".to_string()));
+    }
+
+    #[test]
+    fn mouse_input_requires_experimental_switch_and_no_game_mode() {
+        let mut config = AppConfig::default();
+        assert!(!should_accept_mouse_input(&config));
+
+        config.experimental_mouse_input = true;
+        assert!(should_accept_mouse_input(&config));
+
+        config.game_mode = true;
+        assert!(!should_accept_mouse_input(&config));
     }
 }

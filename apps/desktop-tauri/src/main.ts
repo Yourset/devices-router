@@ -28,6 +28,7 @@ type AppStatus = {
     minimizeToTray: boolean;
     autoDiscovery: boolean;
     gameMode: boolean;
+    experimentalMouseInput: boolean;
     theme: Theme;
     mouseSensitivity: MouseSensitivity;
     mouseFollow: {
@@ -87,6 +88,7 @@ let status: AppStatus = {
     minimizeToTray: false,
     autoDiscovery: true,
     gameMode: false,
+    experimentalMouseInput: false,
     theme: "light",
     mouseSensitivity: "balanced",
     mouseFollow: {
@@ -167,6 +169,10 @@ async function setAutoDiscovery(enabled: boolean) {
 
 async function setGameMode(enabled: boolean) {
   await runAction("game-mode", () => invoke("set_game_mode", { enabled }));
+}
+
+async function setExperimentalMouseInput(enabled: boolean) {
+  await runAction("experimental-mouse-input", () => invoke("set_experimental_mouse_input", { enabled }));
 }
 
 async function setMouseSensitivity(preset: MouseSensitivity) {
@@ -396,6 +402,7 @@ function renderSettingsTab() {
         <h2>安全和发现</h2>
         ${toggleRow("自动寻找主电脑", "auto-discovery", status.config.autoDiscovery)}
         ${toggleRow("游戏模式", "game-mode", status.config.gameMode)}
+        ${toggleRow("实验性鼠标输入", "experimental-mouse-input", status.config.experimentalMouseInput)}
       </article>
       <article class="panel wide">
         <h2>界面主题</h2>
@@ -450,6 +457,7 @@ function bindEvents() {
   onClick("minimize-on-start", () => setMinimizeOnStart(!status.config.minimizeToTray));
   onClick("auto-discovery", () => setAutoDiscovery(!status.config.autoDiscovery));
   onClick("game-mode", () => setGameMode(!status.config.gameMode));
+  onClick("experimental-mouse-input", () => setExperimentalMouseInput(!status.config.experimentalMouseInput));
   onClick("theme-light", () => setTheme("light"));
   onClick("theme-soft", () => setTheme("soft"));
   onClick("mouse-stable", () => setMouseSensitivity("stable"));

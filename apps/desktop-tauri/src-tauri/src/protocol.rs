@@ -6,6 +6,7 @@ pub enum BridgeEvent {
     ClientHello { role: ClientRole },
     Ping { message: String },
     MouseActivity { source: MouseSource },
+    MouseInput { event: MouseInputEvent },
     TargetRequest { target: TargetSide },
     TargetState { target: TargetSide },
     Key { action: KeyAction, key: String },
@@ -22,6 +23,47 @@ pub enum ClientRole {
 pub enum MouseSource {
     Host,
     Remote,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MouseInputEvent {
+    MoveRelative {
+        dx: i32,
+        dy: i32,
+    },
+    MoveAbsolute {
+        x: i32,
+        y: i32,
+    },
+    MoveToLeftEdge {
+        y_permille: u16,
+    },
+    Wheel {
+        delta: i32,
+    },
+    HWheel {
+        delta: i32,
+    },
+    Button {
+        button: MouseButton,
+        action: MouseButtonAction,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MouseButton {
+    Left,
+    Right,
+    Middle,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MouseButtonAction {
+    Down,
+    Up,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -118,6 +160,53 @@ mod tests {
     fn target_state_round_trips() {
         let event = BridgeEvent::TargetState {
             target: TargetSide::Local,
+        };
+
+        let payload = encode_event(&event).unwrap();
+
+        assert_eq!(decode_event(&payload).unwrap(), event);
+    }
+
+    #[test]
+    fn mouse_input_round_trips() {
+        let event = BridgeEvent::MouseInput {
+            event: MouseInputEvent::Button {
+                button: MouseButton::Left,
+                action: MouseButtonAction::Down,
+            },
+        };
+
+        let payload = encode_event(&event).unwrap();
+
+        assert_eq!(decode_event(&payload).unwrap(), event);
+    }
+
+    #[test]
+    fn mouse_relative_move_round_trips_signed_delta() {
+        let event = BridgeEvent::MouseInput {
+            event: MouseInputEvent::MoveRelative { dx: -12, dy: 7 },
+        };
+
+        let payload = encode_event(&event).unwrap();
+
+        assert_eq!(decode_event(&payload).unwrap(), event);
+    }
+
+    #[test]
+    fn mouse_absolute_move_round_trips_coordinates() {
+        let event = BridgeEvent::MouseInput {
+            event: MouseInputEvent::MoveAbsolute { x: 10, y: 200 },
+        };
+
+        let payload = encode_event(&event).unwrap();
+
+        assert_eq!(decode_event(&payload).unwrap(), event);
+    }
+
+    #[test]
+    fn mouse_left_edge_move_round_trips_vertical_ratio() {
+        let event = BridgeEvent::MouseInput {
+            event: MouseInputEvent::MoveToLeftEdge { y_permille: 500 },
         };
 
         let payload = encode_event(&event).unwrap();

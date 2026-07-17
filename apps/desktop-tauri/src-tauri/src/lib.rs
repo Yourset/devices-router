@@ -219,6 +219,18 @@ fn set_game_mode(enabled: bool, state: tauri::State<SharedState>) {
 }
 
 #[tauri::command]
+fn set_experimental_mouse_input(enabled: bool, state: tauri::State<SharedState>) {
+    state.runtime().update_config(|config| {
+        config.experimental_mouse_input = enabled;
+    });
+    state.runtime().log(if enabled {
+        "[config] experimental mouse input enabled\n"
+    } else {
+        "[config] experimental mouse input disabled\n"
+    });
+}
+
+#[tauri::command]
 fn set_mouse_sensitivity(preset: String, state: tauri::State<SharedState>) -> Result<(), String> {
     if !matches!(preset.as_str(), "stable" | "balanced" | "sensitive") {
         return Err(format!("Unsupported mouse sensitivity: {preset}"));
@@ -338,6 +350,7 @@ pub fn run() {
             set_minimize_to_tray,
             set_auto_discovery,
             set_game_mode,
+            set_experimental_mouse_input,
             set_mouse_sensitivity,
             network_diagnostics
         ])
