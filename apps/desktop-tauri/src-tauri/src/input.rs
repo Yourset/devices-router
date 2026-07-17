@@ -140,7 +140,7 @@ pub fn send_key_event(key: &str, is_down: bool) -> anyhow::Result<()> {
             },
         },
     };
-    let sent = unsafe { SendInput(&mut [input], std::mem::size_of::<INPUT>() as i32) };
+    let sent = unsafe { SendInput(&[input], std::mem::size_of::<INPUT>() as i32) };
     if sent != 1 {
         anyhow::bail!("SendInput failed");
     }
@@ -174,7 +174,7 @@ pub fn send_mouse_input_event(event: &MouseInputEvent) -> anyhow::Result<()> {
             },
         },
     };
-    let sent = unsafe { SendInput(&mut [input], std::mem::size_of::<INPUT>() as i32) };
+    let sent = unsafe { SendInput(&[input], std::mem::size_of::<INPUT>() as i32) };
     if sent != 1 {
         anyhow::bail!("SendInput mouse event failed");
     }
@@ -239,7 +239,7 @@ fn send_scan_key(vk: u16, is_down: bool) -> anyhow::Result<()> {
             },
         },
     };
-    let sent = unsafe { SendInput(&mut [input], std::mem::size_of::<INPUT>() as i32) };
+    let sent = unsafe { SendInput(&[input], std::mem::size_of::<INPUT>() as i32) };
     if sent != 1 {
         anyhow::bail!("SendInput scan key failed");
     }
@@ -275,7 +275,7 @@ fn send_unicode_unit(code_unit: u16, is_down: bool) -> anyhow::Result<()> {
             },
         },
     };
-    let sent = unsafe { SendInput(&mut [input], std::mem::size_of::<INPUT>() as i32) };
+    let sent = unsafe { SendInput(&[input], std::mem::size_of::<INPUT>() as i32) };
     if sent != 1 {
         anyhow::bail!("SendInput text failed");
     }

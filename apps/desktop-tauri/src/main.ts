@@ -88,7 +88,7 @@ let status: AppStatus = {
     minimizeToTray: false,
     autoDiscovery: true,
     gameMode: false,
-    experimentalMouseInput: false,
+    experimentalMouseInput: true,
     theme: "light",
     mouseSensitivity: "balanced",
     mouseFollow: {
@@ -296,12 +296,16 @@ function renderMouseTab() {
     <section class="workspace">
       <article class="panel">
         <h2>鼠标跟随</h2>
+        <p>支持任意 Windows 鼠标，不需要 Logitech Flow。两台电脑都开启后，从主电脑右边缘向右划入副电脑。</p>
+        ${toggleRow("跨电脑鼠标控制", "experimental-mouse-input", status.config.experimentalMouseInput)}
         ${definitionList([
+          ["跨电脑控制", onOff(status.config.experimentalMouseInput)],
           ["自动跟随", onOff(status.config.mouseFollow.enabled)],
           ["主电脑移动切回", onOff(status.config.mouseFollow.hostMouseReturnsLocal)],
           ["副电脑移动切过去", onOff(status.config.mouseFollow.remoteMouseSwitchesRemote)],
           ["游戏模式", onOff(status.config.gameMode)]
         ])}
+        <p>游戏模式会禁用跨电脑鼠标输入，避免在全屏游戏中抢走控制权。</p>
       </article>
       <article class="panel">
         <h2>灵敏度</h2>

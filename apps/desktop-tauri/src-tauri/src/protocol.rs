@@ -91,6 +91,7 @@ pub fn decode_event(payload: &[u8]) -> anyhow::Result<BridgeEvent> {
     Ok(serde_json::from_slice(trimmed)?)
 }
 
+#[cfg(test)]
 pub fn is_legacy_silent_lan_client(peer_ip: &str) -> bool {
     peer_ip != "127.0.0.1" && peer_ip != "::1"
 }

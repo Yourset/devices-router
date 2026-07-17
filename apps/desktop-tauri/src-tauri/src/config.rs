@@ -45,6 +45,8 @@ pub struct AppConfig {
     pub auto_discovery: bool,
     pub game_mode: bool,
     pub experimental_mouse_input: bool,
+    #[serde(default)]
+    pub mouse_input_initialized: bool,
     pub theme: String,
 }
 
@@ -64,7 +66,8 @@ impl Default for AppConfig {
             minimize_to_tray: false,
             auto_discovery: true,
             game_mode: false,
-            experimental_mouse_input: false,
+            experimental_mouse_input: true,
+            mouse_input_initialized: true,
             theme: "light".to_string(),
         }
     }
@@ -92,6 +95,10 @@ impl AppConfig {
     }
 
     fn normalize(&mut self) {
+        if !self.mouse_input_initialized {
+            self.experimental_mouse_input = true;
+            self.mouse_input_initialized = true;
+        }
         if self.mouse_follow.host_poll_interval_ms == 50
             || self.mouse_follow.host_poll_interval_ms == 30
         {
@@ -181,7 +188,7 @@ mod tests {
         assert_eq!(AppConfig::default().theme, "light");
         assert!(AppConfig::default().restore_last_mode);
         assert!(AppConfig::default().auto_discovery);
-        assert!(!AppConfig::default().experimental_mouse_input);
+        assert!(AppConfig::default().experimental_mouse_input);
         assert_eq!(AppConfig::default().startup_mode, "last");
         assert_eq!(AppConfig::default().mouse_sensitivity, "balanced");
     }
@@ -217,13 +224,35 @@ mod tests {
 
     #[test]
     fn normalize_syncs_legacy_restore_last_mode() {
-        let mut config = AppConfig::default();
-        config.startup_mode = "bad-value".to_string();
-        config.restore_last_mode = false;
+        let mut config = AppConfig {
+            startup_mode: "bad-value".to_string(),
+            restore_last_mode: false,
+            ..AppConfig::default()
+        };
 
         config.normalize();
 
         assert_eq!(config.startup_mode, "idle");
         assert!(!config.restore_last_mode);
+    }
+
+    #[test]
+    fn normalize_enables_mouse_input_once_for_pre_0124_configs() {
+        let payload = r#"{
+            "experimentalMouseInput": false,
+            "gameMode": false,
+            "lastMode": "remote"
+        }"#;
+        let mut config: AppConfig = serde_json::from_str(payload).unwrap();
+
+        assert!(!config.mouse_input_initialized);
+        config.normalize();
+
+        assert!(config.experimental_mouse_input);
+        assert!(config.mouse_input_initialized);
+
+        config.experimental_mouse_input = false;
+        config.normalize();
+        assert!(!config.experimental_mouse_input);
     }
 }

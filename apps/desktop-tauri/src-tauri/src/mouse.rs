@@ -1,25 +1,15 @@
 #[cfg(windows)]
 use windows::Win32::Foundation::POINT;
 #[cfg(windows)]
-use windows::Win32::UI::{
-    Input::KeyboardAndMouse::{GetAsyncKeyState, VIRTUAL_KEY, VK_LBUTTON, VK_MBUTTON, VK_RBUTTON},
-    WindowsAndMessaging::{
-        GetCursorPos, GetSystemMetrics, SetCursorPos, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
-        SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
-    },
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetCursorPos, GetSystemMetrics, SetCursorPos, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
+    SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MousePosition {
     pub x: i32,
     pub y: i32,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct MouseButtonState {
-    pub left: bool,
-    pub right: bool,
-    pub middle: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -69,20 +59,6 @@ pub fn cursor_position() -> anyhow::Result<MousePosition> {
 pub fn set_cursor_position(pos: MousePosition) -> anyhow::Result<()> {
     unsafe { SetCursorPos(pos.x, pos.y)? };
     Ok(())
-}
-
-#[cfg(windows)]
-pub fn mouse_button_state() -> MouseButtonState {
-    MouseButtonState {
-        left: is_button_down(VK_LBUTTON),
-        right: is_button_down(VK_RBUTTON),
-        middle: is_button_down(VK_MBUTTON),
-    }
-}
-
-#[cfg(windows)]
-fn is_button_down(button: VIRTUAL_KEY) -> bool {
-    unsafe { GetAsyncKeyState(button.0 as i32) < 0 }
 }
 
 #[cfg(windows)]

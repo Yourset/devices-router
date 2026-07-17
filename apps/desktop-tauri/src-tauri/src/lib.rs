@@ -6,6 +6,7 @@ mod elevation;
 mod input;
 mod keyboard_hook;
 mod mouse;
+mod mouse_hook;
 mod protocol;
 mod startup;
 mod tray;
@@ -222,6 +223,7 @@ fn set_game_mode(enabled: bool, state: tauri::State<SharedState>) {
 fn set_experimental_mouse_input(enabled: bool, state: tauri::State<SharedState>) {
     state.runtime().update_config(|config| {
         config.experimental_mouse_input = enabled;
+        config.mouse_input_initialized = true;
     });
     state.runtime().log(if enabled {
         "[config] experimental mouse input enabled\n"

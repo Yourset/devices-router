@@ -4,9 +4,10 @@ use crate::discovery::{broadcast_host, discover_host, scan_local_network};
 use crate::input::{release_local_modifiers, send_key_event, send_mouse_input_event};
 use crate::keyboard_hook::{run_keyboard_hook, set_key_suppression, RawKeyEvent};
 use crate::mouse::{
-    at_left_edge, at_right_edge, cursor_position, mouse_button_state, screen_center,
-    set_cursor_position, virtual_screen_rect, MouseButtonState,
+    at_left_edge, at_right_edge, cursor_position, screen_center, set_cursor_position,
+    virtual_screen_rect,
 };
+use crate::mouse_hook::{run_mouse_hook, set_mouse_input_suppression};
 use crate::protocol::{
     decode_event, encode_event, BridgeEvent, ClientRole, KeyAction, MouseButton, MouseButtonAction,
     MouseInputEvent, MouseSource, TargetSide,
@@ -26,6 +27,7 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(300);
 pub fn start_mode(mode: AppMode, runtime: Arc<AppRuntime>) -> Result<()> {
     runtime.request_stop();
     set_key_suppression(false);
+    set_mouse_input_suppression(false);
     thread::sleep(Duration::from_millis(50));
     runtime.start(mode);
     match mode {
@@ -49,6 +51,7 @@ fn start_host(runtime: Arc<AppRuntime>) -> Result<()> {
 
 fn run_host(runtime: Arc<AppRuntime>) -> Result<()> {
     let (key_tx, key_rx) = mpsc::channel::<RawKeyEvent>();
+    let (mouse_tx, mouse_rx) = mpsc::channel::<MouseInputEvent>();
     let hook_runtime = Arc::clone(&runtime);
     thread::Builder::new()
         .name("devices-router-keyboard-hook".to_string())
@@ -58,6 +61,15 @@ fn run_host(runtime: Arc<AppRuntime>) -> Result<()> {
             }
         })
         .context("spawn keyboard hook thread")?;
+    let mouse_hook_runtime = Arc::clone(&runtime);
+    thread::Builder::new()
+        .name("devices-router-mouse-hook".to_string())
+        .spawn(move || {
+            if let Err(err) = run_mouse_hook(mouse_tx) {
+                mouse_hook_runtime.log(format!("[host] mouse hook failed: {err:#}\n"));
+            }
+        })
+        .context("spawn mouse hook thread")?;
     let discovery_runtime = Arc::clone(&runtime);
     thread::Builder::new()
         .name("devices-router-discovery-broadcast".to_string())
@@ -94,7 +106,7 @@ fn run_host(runtime: Arc<AppRuntime>) -> Result<()> {
             Ok((stream, address)) => match accept_remote_client(&runtime, stream, address) {
                 Ok(Some(stream)) => {
                     runtime.set_connected(true);
-                    handle_host_client(&runtime, stream, &key_rx);
+                    handle_host_client(&runtime, stream, &key_rx, &mouse_rx);
                     runtime.set_connected(false);
                 }
                 Ok(None) => {}
@@ -159,6 +171,7 @@ fn handle_host_client(
     runtime: &Arc<AppRuntime>,
     stream: TcpStream,
     key_rx: &mpsc::Receiver<RawKeyEvent>,
+    mouse_rx: &mpsc::Receiver<MouseInputEvent>,
 ) {
     let mut writer = match stream.try_clone() {
         Ok(writer) => writer,
@@ -179,9 +192,26 @@ fn handle_host_client(
     let mut last_mouse_crossing = Instant::now()
         .checked_sub(Duration::from_secs(2))
         .unwrap_or_else(Instant::now);
-    let mut last_mouse_buttons = MouseButtonState::default();
+    let mut mouse_was_suppressed = false;
     let mut last_heartbeat = Instant::now();
     while !runtime.should_stop() {
+        let config = runtime.config();
+        let suppress_mouse = should_suppress_local_mouse_input(&config, runtime.target());
+        if mouse_was_suppressed && !suppress_mouse {
+            release_remote_mouse_buttons(runtime, &mut writer);
+        }
+        set_mouse_input_suppression(suppress_mouse);
+        mouse_was_suppressed = suppress_mouse;
+        while let Ok(event) = mouse_rx.try_recv() {
+            if suppress_mouse {
+                send_bridge_event(
+                    runtime,
+                    &mut writer,
+                    BridgeEvent::MouseInput { event },
+                    "[host] failed to forward remote mouse input",
+                );
+            }
+        }
         if last_heartbeat.elapsed() >= HEARTBEAT_INTERVAL {
             let heartbeat = BridgeEvent::Ping {
                 message: "host-heartbeat".to_string(),
@@ -252,7 +282,7 @@ fn handle_host_client(
             }
         }
 
-        if let Some(current_pos) = cursor_position().ok() {
+        if let Ok(current_pos) = cursor_position() {
             let config = runtime.config();
             if should_accept_mouse_input(&config) {
                 let screen = virtual_screen_rect();
@@ -289,7 +319,6 @@ fn handle_host_client(
                     last_mouse_crossing = Instant::now();
                     let _ = set_cursor_position(center);
                     last_mouse_pos = Some(center);
-                    last_mouse_buttons = mouse_button_state();
                     continue;
                 }
                 if runtime.target() == KeyboardTarget::Remote {
@@ -307,9 +336,6 @@ fn handle_host_client(
                         let _ = set_cursor_position(center);
                         last_mouse_pos = Some(center);
                     }
-                    let buttons = mouse_button_state();
-                    forward_mouse_button_changes(runtime, &mut writer, last_mouse_buttons, buttons);
-                    last_mouse_buttons = buttons;
                     continue;
                 }
             }
@@ -354,16 +380,15 @@ fn handle_host_client(
                 }) => {
                     if last_switch.elapsed()
                         >= Duration::from_millis(runtime.config().mouse_follow.switch_debounce_ms)
-                    {
-                        if apply_host_target(
+                        && apply_host_target(
                             runtime,
                             KeyboardTarget::Remote,
                             "[主电脑] 副电脑鼠标活动：键盘到副电脑\n",
                             true,
-                        ) {
-                            send_target_state(runtime, &mut writer);
-                            last_switch = Instant::now();
-                        }
+                        )
+                    {
+                        send_target_state(runtime, &mut writer);
+                        last_switch = Instant::now();
                     }
                 }
                 Ok(BridgeEvent::Ping { .. }) => {}
@@ -378,6 +403,10 @@ fn handle_host_client(
         }
         thread::sleep(Duration::from_millis(10));
     }
+    if mouse_was_suppressed {
+        release_remote_mouse_buttons(runtime, &mut writer);
+    }
+    set_mouse_input_suppression(false);
 }
 
 fn update_modifier_state(event: &RawKeyEvent, ctrl_down: &mut bool, alt_down: &mut bool) {
@@ -461,58 +490,20 @@ fn send_bridge_event(
     }
 }
 
-fn forward_mouse_button_changes(
-    runtime: &Arc<AppRuntime>,
-    writer: &mut TcpStream,
-    previous: MouseButtonState,
-    current: MouseButtonState,
-) {
-    forward_mouse_button_change(
-        runtime,
-        writer,
-        MouseButton::Left,
-        previous.left,
-        current.left,
-    );
-    forward_mouse_button_change(
-        runtime,
-        writer,
-        MouseButton::Right,
-        previous.right,
-        current.right,
-    );
-    forward_mouse_button_change(
-        runtime,
-        writer,
-        MouseButton::Middle,
-        previous.middle,
-        current.middle,
-    );
-}
-
-fn forward_mouse_button_change(
-    runtime: &Arc<AppRuntime>,
-    writer: &mut TcpStream,
-    button: MouseButton,
-    was_down: bool,
-    is_down: bool,
-) {
-    if was_down == is_down {
-        return;
+fn release_remote_mouse_buttons(runtime: &Arc<AppRuntime>, writer: &mut TcpStream) {
+    for button in [MouseButton::Left, MouseButton::Right, MouseButton::Middle] {
+        send_bridge_event(
+            runtime,
+            writer,
+            BridgeEvent::MouseInput {
+                event: MouseInputEvent::Button {
+                    button,
+                    action: MouseButtonAction::Up,
+                },
+            },
+            "[host] failed to release remote mouse button",
+        );
     }
-    let action = if is_down {
-        MouseButtonAction::Down
-    } else {
-        MouseButtonAction::Up
-    };
-    send_bridge_event(
-        runtime,
-        writer,
-        BridgeEvent::MouseInput {
-            event: MouseInputEvent::Button { button, action },
-        },
-        "[host] failed to forward remote mouse button",
-    );
 }
 
 fn run_host_mouse_loop(runtime: Arc<AppRuntime>) {
@@ -696,6 +687,10 @@ fn should_accept_mouse_input(config: &AppConfig) -> bool {
     config.experimental_mouse_input && !config.game_mode
 }
 
+fn should_suppress_local_mouse_input(config: &AppConfig, target: KeyboardTarget) -> bool {
+    should_accept_mouse_input(config) && target == KeyboardTarget::Remote
+}
+
 fn resolve_remote_target(runtime: &Arc<AppRuntime>) -> Option<String> {
     let config = runtime.config();
     if let Some(host) = config
@@ -843,14 +838,31 @@ mod tests {
     }
 
     #[test]
-    fn mouse_input_requires_experimental_switch_and_no_game_mode() {
+    fn mouse_input_is_enabled_by_default_and_blocked_by_game_mode() {
         let mut config = AppConfig::default();
-        assert!(!should_accept_mouse_input(&config));
-
-        config.experimental_mouse_input = true;
         assert!(should_accept_mouse_input(&config));
 
         config.game_mode = true;
         assert!(!should_accept_mouse_input(&config));
+    }
+
+    #[test]
+    fn local_mouse_events_are_suppressed_only_while_controlling_remote() {
+        let mut config = AppConfig::default();
+
+        assert!(!should_suppress_local_mouse_input(
+            &config,
+            KeyboardTarget::Local
+        ));
+        assert!(should_suppress_local_mouse_input(
+            &config,
+            KeyboardTarget::Remote
+        ));
+
+        config.game_mode = true;
+        assert!(!should_suppress_local_mouse_input(
+            &config,
+            KeyboardTarget::Remote
+        ));
     }
 }
