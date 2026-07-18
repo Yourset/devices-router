@@ -1,6 +1,6 @@
 [package]
 name = "devices-router"
-version = "0.1.29"
+version = "0.1.30"
 description = "Keyboard routing between Windows computers"
 authors = ["Yourset"]
 edition = "2021"

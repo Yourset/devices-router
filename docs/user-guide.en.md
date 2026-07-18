@@ -2,7 +2,7 @@
 
 ## Who It Is For
 
-You want to use one ordinary keyboard on two Windows PCs. Devices Router fills that gap. `v0.1.29` temporarily disables mouse features.
+You want to use one ordinary keyboard on two Windows PCs. Devices Router fills that gap. `v0.1.30` temporarily disables mouse features.
 
 Recommended setup:
 

@@ -425,7 +425,7 @@ fn handle_host_client(
             }
         }
         match reader.read_line(&mut line) {
-            Ok(0) => {}
+            Ok(bytes_read) if stream_read_reached_eof(bytes_read) => break,
             Ok(_) => match decode_event(line.as_bytes()) {
                 Ok(BridgeEvent::TargetRequest { target }) => match target {
                     TargetSide::Local => {
@@ -483,6 +483,10 @@ fn handle_host_client(
         release_remote_inputs(runtime, &mut writer);
     }
     set_mouse_input_suppression(false);
+}
+
+fn stream_read_reached_eof(bytes_read: usize) -> bool {
+    bytes_read == 0
 }
 
 fn update_modifier_state(event: &RawKeyEvent, ctrl_down: &mut bool, alt_down: &mut bool) {
@@ -923,6 +927,12 @@ mod tests {
     use crate::mouse::{MousePosition, ScreenRect};
 
     use super::*;
+
+    #[test]
+    fn zero_byte_read_marks_tcp_session_as_finished() {
+        assert!(stream_read_reached_eof(0));
+        assert!(!stream_read_reached_eof(1));
+    }
 
     #[test]
     fn remote_payload_ignores_num_lock() {

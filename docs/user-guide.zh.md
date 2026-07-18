@@ -2,7 +2,7 @@
 
 ## 适合谁
 
-你想用一把普通键盘控制两台 Windows 电脑，不想依赖 Logitech Flow 或罗技硬件。Devices Router 会把主电脑的键盘输入转发到副电脑。`v0.1.29` 暂时停用鼠标功能。
+你想用一把普通键盘控制两台 Windows 电脑，不想依赖 Logitech Flow 或罗技硬件。Devices Router 会把主电脑的键盘输入转发到副电脑。`v0.1.30` 暂时停用鼠标功能。
 
 推荐场景：
 

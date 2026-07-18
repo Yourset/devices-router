@@ -2,7 +2,7 @@
 
 A small Windows utility that routes one ordinary keyboard between two Windows PCs.
 
-Devices Router forwards keyboard input from the host PC to the remote PC. `v0.1.29` is a keyboard-only stable release; mouse features are temporarily disabled.
+Devices Router forwards keyboard input from the host PC to the remote PC. `v0.1.30` is a keyboard-only stable release; mouse features are temporarily disabled.
 
 Language / 璇█: [绠€浣撲腑鏂嘳(README.md) | **English**
 
@@ -10,7 +10,7 @@ Language / 璇█: [绠€浣撲腑鏂嘳(README.md) | **English**
 
 - Platform: Windows -> Windows
 - Main implementation: Tauri/Rust desktop app in `apps/desktop-tauri/`
-- Current version: `v0.1.29`
+- Current version: `v0.1.30`
 - For normal users: install the `.exe` setup package. Node.js, Rust, Python, and other development dependencies are not required.
 - Ports:
   - TCP `8765`: keyboard events, control messages, heartbeat
@@ -139,7 +139,7 @@ A browser page cannot inject system-level keyboard input into other Windows appl
 - Currently focused on Windows-to-Windows usage.
 - UAC, elevated windows, protected games, or security software may reject normal simulated input.
 - Chinese IME composition, complex shortcuts, and media keys may need more polish.
-- Mouse routing and mouse-activity switching are temporarily unavailable in `v0.1.29`.
+- Mouse routing and mouse-activity switching are temporarily unavailable in `v0.1.30`.
 
 ## Project Positioning
 
