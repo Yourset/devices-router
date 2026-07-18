@@ -83,6 +83,7 @@ struct InnerState {
     remote_sender: Option<mpsc::Sender<BridgeEvent>>,
     remote_sender_generation: u64,
     local_release_generation: u64,
+    emergency_release_generation: u64,
 }
 
 impl SharedState {
@@ -99,6 +100,7 @@ impl SharedState {
                     remote_sender: None,
                     remote_sender_generation: 0,
                     local_release_generation: 0,
+                    emergency_release_generation: 0,
                 }),
                 stop: AtomicBool::new(false),
             }),
@@ -245,6 +247,16 @@ impl AppRuntime {
         let inner = self.state.lock().expect("state lock poisoned");
         inner.local_release_generation
     }
+
+    pub fn mark_emergency_release(&self) {
+        let mut inner = self.state.lock().expect("state lock poisoned");
+        inner.emergency_release_generation = inner.emergency_release_generation.wrapping_add(1);
+    }
+
+    pub fn emergency_release_generation(&self) -> u64 {
+        let inner = self.state.lock().expect("state lock poisoned");
+        inner.emergency_release_generation
+    }
 }
 
 fn push_log(logs: &mut VecDeque<String>, line: String) {
@@ -273,5 +285,21 @@ mod tests {
         runtime.mark_local_release();
 
         assert_eq!(runtime.local_release_generation(), before.wrapping_add(1));
+    }
+
+    #[test]
+    fn emergency_release_generation_increments_independently() {
+        let state = SharedState::new("test");
+        let runtime = state.runtime();
+        let local_before = runtime.local_release_generation();
+        let emergency_before = runtime.emergency_release_generation();
+
+        runtime.mark_emergency_release();
+
+        assert_eq!(runtime.local_release_generation(), local_before);
+        assert_eq!(
+            runtime.emergency_release_generation(),
+            emergency_before.wrapping_add(1)
+        );
     }
 }

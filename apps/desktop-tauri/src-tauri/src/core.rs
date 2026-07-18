@@ -25,7 +25,9 @@ use std::time::{Duration, Instant};
 
 const TCP_PORT: u16 = 8765;
 const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(300);
-const LOCAL_RELEASE_COOLDOWN: Duration = Duration::from_secs(1);
+const LOCAL_RELEASE_COOLDOWN: Duration = Duration::from_millis(120);
+const EMERGENCY_RELEASE_COOLDOWN: Duration = Duration::from_secs(1);
+const HOST_SESSION_POLL_INTERVAL: Duration = Duration::from_millis(5);
 const CROSS_SCREEN_MOUSE_AVAILABLE: bool = false;
 const MOUSE_ACTIVITY_FOLLOW_AVAILABLE: bool = true;
 
@@ -52,6 +54,7 @@ pub fn force_local_release(runtime: &Arc<AppRuntime>, log_line: &str) -> bool {
     let changed = runtime.target() != KeyboardTarget::Local;
     runtime.set_target(KeyboardTarget::Local);
     runtime.mark_local_release();
+    runtime.mark_emergency_release();
     set_key_suppression(false);
     set_mouse_input_suppression(false);
     let _ = runtime.send_remote_event(BridgeEvent::TargetRequest {
@@ -239,8 +242,12 @@ fn handle_host_client(
     let mut mouse_was_suppressed = false;
     let mut last_target = runtime.target();
     let mut observed_release_generation = runtime.local_release_generation();
+    let mut observed_emergency_generation = runtime.emergency_release_generation();
     let mut last_local_release = Instant::now()
         .checked_sub(LOCAL_RELEASE_COOLDOWN)
+        .unwrap_or_else(Instant::now);
+    let mut last_emergency_release = Instant::now()
+        .checked_sub(EMERGENCY_RELEASE_COOLDOWN)
         .unwrap_or_else(Instant::now);
     let mut last_heartbeat = Instant::now();
     'session: while !runtime.should_stop() {
@@ -255,6 +262,11 @@ fn handle_host_client(
             observed_release_generation = release_generation;
             last_local_release = Instant::now();
             last_switch = Instant::now();
+        }
+        let emergency_generation = runtime.emergency_release_generation();
+        if emergency_generation != observed_emergency_generation {
+            observed_emergency_generation = emergency_generation;
+            last_emergency_release = Instant::now();
         }
         let config = runtime.config();
         let current_target = runtime.target();
@@ -457,6 +469,7 @@ fn handle_host_client(
                         && should_accept_remote_mouse_activity(
                             last_switch.elapsed(),
                             last_local_release.elapsed(),
+                            last_emergency_release.elapsed(),
                             Duration::from_millis(runtime.config().mouse_follow.switch_debounce_ms),
                         )
                         && apply_host_target(
@@ -480,7 +493,7 @@ fn handle_host_client(
                 break;
             }
         }
-        thread::sleep(Duration::from_millis(10));
+        thread::sleep(HOST_SESSION_POLL_INTERVAL);
     }
     if should_release_inputs_on_session_end(runtime.target(), mouse_was_suppressed) {
         release_remote_inputs(runtime, &mut writer);
@@ -821,9 +834,12 @@ fn should_release_remote_inputs(
 fn should_accept_remote_mouse_activity(
     time_since_switch: Duration,
     time_since_local_release: Duration,
+    time_since_emergency_release: Duration,
     switch_debounce: Duration,
 ) -> bool {
-    time_since_switch >= switch_debounce && time_since_local_release >= LOCAL_RELEASE_COOLDOWN
+    time_since_switch >= switch_debounce
+        && time_since_local_release >= LOCAL_RELEASE_COOLDOWN
+        && time_since_emergency_release >= EMERGENCY_RELEASE_COOLDOWN
 }
 
 fn should_release_inputs_on_session_end(
@@ -1000,6 +1016,13 @@ mod tests {
     }
 
     #[test]
+    fn automatic_follow_latency_budget_stays_below_200ms() {
+        assert!(LOCAL_RELEASE_COOLDOWN <= Duration::from_millis(150));
+        assert!(HOST_SESSION_POLL_INTERVAL <= Duration::from_millis(5));
+        assert!(EMERGENCY_RELEASE_COOLDOWN >= Duration::from_secs(1));
+    }
+
+    #[test]
     fn local_mouse_events_are_never_suppressed_in_keyboard_only_release() {
         let mut config = AppConfig::default();
 
@@ -1109,10 +1132,12 @@ mod tests {
     fn queued_remote_activity_is_rejected_during_emergency_release_cooldown() {
         assert!(!should_accept_remote_mouse_activity(
             Duration::from_secs(2),
+            Duration::from_secs(2),
             Duration::from_millis(20),
             Duration::from_millis(80),
         ));
         assert!(should_accept_remote_mouse_activity(
+            Duration::from_secs(2),
             Duration::from_secs(2),
             Duration::from_secs(2),
             Duration::from_millis(80),

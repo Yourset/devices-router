@@ -20,10 +20,10 @@ impl Default for MouseFollowConfig {
             enabled: true,
             host_mouse_returns_local: true,
             remote_mouse_switches_remote: true,
-            host_poll_interval_ms: 20,
-            remote_report_interval_ms: 40,
-            host_priority_cooldown_ms: 60,
-            switch_debounce_ms: 80,
+            host_poll_interval_ms: 10,
+            remote_report_interval_ms: 15,
+            host_priority_cooldown_ms: 25,
+            switch_debounce_ms: 30,
         }
     }
 }
@@ -142,22 +142,22 @@ impl AppConfig {
 pub fn apply_mouse_sensitivity(mouse: &mut MouseFollowConfig, preset: &str) {
     match preset {
         "stable" => {
-            mouse.host_poll_interval_ms = 30;
-            mouse.remote_report_interval_ms = 80;
-            mouse.host_priority_cooldown_ms = 140;
-            mouse.switch_debounce_ms = 160;
+            mouse.host_poll_interval_ms = 20;
+            mouse.remote_report_interval_ms = 60;
+            mouse.host_priority_cooldown_ms = 100;
+            mouse.switch_debounce_ms = 120;
         }
         "sensitive" => {
-            mouse.host_poll_interval_ms = 15;
-            mouse.remote_report_interval_ms = 25;
-            mouse.host_priority_cooldown_ms = 40;
-            mouse.switch_debounce_ms = 50;
+            mouse.host_poll_interval_ms = 5;
+            mouse.remote_report_interval_ms = 10;
+            mouse.host_priority_cooldown_ms = 15;
+            mouse.switch_debounce_ms = 20;
         }
         _ => {
-            mouse.host_poll_interval_ms = 20;
-            mouse.remote_report_interval_ms = 40;
-            mouse.host_priority_cooldown_ms = 60;
-            mouse.switch_debounce_ms = 80;
+            mouse.host_poll_interval_ms = 10;
+            mouse.remote_report_interval_ms = 15;
+            mouse.host_priority_cooldown_ms = 25;
+            mouse.switch_debounce_ms = 30;
         }
     }
 }
@@ -203,10 +203,10 @@ mod tests {
 
         config.normalize();
 
-        assert_eq!(config.mouse_follow.host_poll_interval_ms, 20);
-        assert_eq!(config.mouse_follow.remote_report_interval_ms, 40);
-        assert_eq!(config.mouse_follow.host_priority_cooldown_ms, 60);
-        assert_eq!(config.mouse_follow.switch_debounce_ms, 80);
+        assert_eq!(config.mouse_follow.host_poll_interval_ms, 10);
+        assert_eq!(config.mouse_follow.remote_report_interval_ms, 15);
+        assert_eq!(config.mouse_follow.host_priority_cooldown_ms, 25);
+        assert_eq!(config.mouse_follow.switch_debounce_ms, 30);
     }
 
     #[test]
@@ -214,12 +214,12 @@ mod tests {
         let mut mouse = MouseFollowConfig::default();
 
         apply_mouse_sensitivity(&mut mouse, "stable");
-        assert_eq!(mouse.remote_report_interval_ms, 80);
-        assert_eq!(mouse.switch_debounce_ms, 160);
+        assert_eq!(mouse.remote_report_interval_ms, 60);
+        assert_eq!(mouse.switch_debounce_ms, 120);
 
         apply_mouse_sensitivity(&mut mouse, "sensitive");
-        assert_eq!(mouse.remote_report_interval_ms, 25);
-        assert_eq!(mouse.switch_debounce_ms, 50);
+        assert_eq!(mouse.remote_report_interval_ms, 10);
+        assert_eq!(mouse.switch_debounce_ms, 20);
     }
 
     #[test]
