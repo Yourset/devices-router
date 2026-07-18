@@ -26,7 +26,8 @@ use std::time::{Duration, Instant};
 const TCP_PORT: u16 = 8765;
 const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(300);
 const LOCAL_RELEASE_COOLDOWN: Duration = Duration::from_secs(1);
-const MOUSE_FEATURES_AVAILABLE: bool = false;
+const CROSS_SCREEN_MOUSE_AVAILABLE: bool = false;
+const MOUSE_ACTIVITY_FOLLOW_AVAILABLE: bool = true;
 
 struct HostSessionSafetyGuard {
     runtime: Arc<AppRuntime>,
@@ -99,7 +100,7 @@ fn run_host(runtime: Arc<AppRuntime>) -> Result<()> {
             }
         })
         .context("spawn keyboard hook thread")?;
-    if MOUSE_FEATURES_AVAILABLE {
+    if CROSS_SCREEN_MOUSE_AVAILABLE {
         let mouse_hook_runtime = Arc::clone(&runtime);
         thread::Builder::new()
             .name("devices-router-mouse-hook".to_string())
@@ -130,7 +131,7 @@ fn run_host(runtime: Arc<AppRuntime>) -> Result<()> {
             }
         })
         .context("spawn update server")?;
-    if MOUSE_FEATURES_AVAILABLE {
+    if MOUSE_ACTIVITY_FOLLOW_AVAILABLE {
         let mouse_runtime = Arc::clone(&runtime);
         thread::Builder::new()
             .name("devices-router-host-mouse".to_string())
@@ -452,17 +453,19 @@ fn handle_host_client(
                 Ok(BridgeEvent::MouseActivity {
                     source: MouseSource::Remote,
                 }) => {
-                    if MOUSE_FEATURES_AVAILABLE
+                    if should_follow_mouse_activity(&runtime.config())
                         && should_accept_remote_mouse_activity(
-                        last_switch.elapsed(),
-                        last_local_release.elapsed(),
-                        Duration::from_millis(runtime.config().mouse_follow.switch_debounce_ms),
-                    ) && apply_host_target(
-                        runtime,
-                        KeyboardTarget::Remote,
-                        "[主电脑] 副电脑鼠标活动：键盘到副电脑\n",
-                        true,
-                    ) {
+                            last_switch.elapsed(),
+                            last_local_release.elapsed(),
+                            Duration::from_millis(runtime.config().mouse_follow.switch_debounce_ms),
+                        )
+                        && apply_host_target(
+                            runtime,
+                            KeyboardTarget::Remote,
+                            "[主电脑] 副电脑鼠标活动：键盘到副电脑\n",
+                            true,
+                        )
+                    {
                         send_target_state(runtime, &mut writer);
                         last_switch = Instant::now();
                     }
@@ -619,11 +622,7 @@ fn run_host_mouse_loop(runtime: Arc<AppRuntime>) {
         thread::sleep(Duration::from_millis(
             config.mouse_follow.host_poll_interval_ms,
         ));
-        if config.game_mode
-            || config.experimental_mouse_input
-            || !config.mouse_follow.enabled
-            || !config.mouse_follow.host_mouse_returns_local
-        {
+        if !should_follow_mouse_activity(&config) || !config.mouse_follow.host_mouse_returns_local {
             continue;
         }
         let Ok(current) = cursor_position() else {
@@ -711,7 +710,7 @@ fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
                         }
                     })
                     .context("spawn remote writer loop")?;
-                if MOUSE_FEATURES_AVAILABLE {
+                if MOUSE_ACTIVITY_FOLLOW_AVAILABLE {
                     let mouse_runtime = Arc::clone(&runtime);
                     thread::Builder::new()
                         .name("devices-router-remote-mouse".to_string())
@@ -798,7 +797,11 @@ fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
 }
 
 fn should_accept_mouse_input(config: &AppConfig) -> bool {
-    MOUSE_FEATURES_AVAILABLE && config.experimental_mouse_input && !config.game_mode
+    CROSS_SCREEN_MOUSE_AVAILABLE && config.experimental_mouse_input && !config.game_mode
+}
+
+fn should_follow_mouse_activity(config: &AppConfig) -> bool {
+    MOUSE_ACTIVITY_FOLLOW_AVAILABLE && config.mouse_follow.enabled && !config.game_mode
 }
 
 fn should_suppress_local_mouse_input(config: &AppConfig, target: KeyboardTarget) -> bool {
@@ -894,8 +897,7 @@ fn run_remote_mouse_loop(runtime: Arc<AppRuntime>, event_tx: mpsc::Sender<Bridge
         thread::sleep(Duration::from_millis(
             config.mouse_follow.remote_report_interval_ms,
         ));
-        if config.game_mode
-            || !config.mouse_follow.enabled
+        if !should_follow_mouse_activity(&config)
             || !config.mouse_follow.remote_mouse_switches_remote
         {
             continue;
@@ -983,6 +985,18 @@ mod tests {
 
         config.game_mode = true;
         assert!(!should_accept_mouse_input(&config));
+    }
+
+    #[test]
+    fn mouse_activity_can_follow_keyboard_without_cross_screen_mouse_input() {
+        let config = AppConfig::default();
+
+        assert!(should_follow_mouse_activity(&config));
+        assert!(!should_accept_mouse_input(&config));
+        assert!(!should_suppress_local_mouse_input(
+            &config,
+            KeyboardTarget::Remote
+        ));
     }
 
     #[test]

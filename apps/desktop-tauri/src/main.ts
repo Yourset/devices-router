@@ -92,7 +92,7 @@ let status: AppStatus = {
     theme: "light",
     mouseSensitivity: "balanced",
     mouseFollow: {
-      enabled: false,
+      enabled: true,
       hostMouseReturnsLocal: true,
       remoteMouseSwitchesRemote: true,
       hostPollIntervalMs: 20,
@@ -175,6 +175,10 @@ async function setGameMode(enabled: boolean) {
   await runAction("game-mode", () => invoke("set_game_mode", { enabled }));
 }
 
+async function setMouseSensitivity(preset: MouseSensitivity) {
+  await runAction(`mouse-${preset}`, () => invoke("set_mouse_sensitivity", { preset }));
+}
+
 async function refreshDiagnostics() {
   diagnostics = await invoke<NetworkDiagnostics>("network_diagnostics");
   render();
@@ -216,7 +220,7 @@ function render() {
       <aside class="sidebar">
         <div class="brand">Devices Router</div>
         ${navButton("overview", "总览")}
-        ${navButton("mouse", "鼠标（暂停）")}
+        ${navButton("mouse", "键盘自动跟随")}
         ${navButton("network", "网络诊断")}
         ${navButton("update", "更新")}
         ${navButton("settings", "设置")}
@@ -277,7 +281,7 @@ function renderOverviewTab() {
       </article>
       <article class="panel wide">
         <h2>控制切换与安全释放</h2>
-        <p>稳定版暂时只启用键盘。按 <strong>Ctrl+Alt+2</strong> 把键盘切到副电脑，按 <strong>Ctrl+Alt+1</strong> 切回主电脑；紧急情况按 <strong>Ctrl+Alt+Esc</strong>。</p>
+        <p>鼠标在哪台电脑活动，键盘就自动跟到哪台电脑。鼠标仍由你现有的方式控制，本软件不会跨电脑转发或拦截鼠标。</p>
         <div class="actions">
           ${actionButton("release-control", "立即回到主电脑", status.target === "local")}
           ${actionButton("target-local", "键盘到主电脑", status.target === "local")}
@@ -289,22 +293,37 @@ function renderOverviewTab() {
 }
 
 function renderMouseTab() {
+  const preset = status.config.mouseSensitivity;
   return `
     <section class="workspace">
-      <article class="panel wide">
-        <h2>鼠标功能暂时停用</h2>
-        <p>为了先恢复一个可靠版本，本版不会捕获、拦截或转发鼠标，也不会根据鼠标活动自动切换键盘。</p>
-        <p>当前请手动切换键盘：<strong>Ctrl+Alt+2</strong> 到副电脑，<strong>Ctrl+Alt+1</strong> 回主电脑。</p>
+      <article class="panel">
+        <h2>鼠标活动切换键盘</h2>
+        <p>在副电脑移动鼠标，键盘自动切到副电脑；回主电脑移动鼠标，键盘自动切回主电脑。</p>
         <div class="actions">
           ${actionButton("release-control", "立即回到主电脑", status.target === "local")}
-          ${actionButton("target-remote", "键盘到副电脑", status.target === "remote")}
         </div>
         ${definitionList([
-          ["跨电脑鼠标", "暂时不可用"],
-          ["鼠标自动切换键盘", "暂时不可用"],
-          ["跨电脑键盘", "可用"]
+          ["键盘自动跟随", onOff(status.config.mouseFollow.enabled)],
+          ["主电脑活动切回", onOff(status.config.mouseFollow.hostMouseReturnsLocal)],
+          ["副电脑活动切过去", onOff(status.config.mouseFollow.remoteMouseSwitchesRemote)],
+          ["跨电脑鼠标转发", "已停用"],
+          ["游戏模式", onOff(status.config.gameMode)]
         ])}
-        <p><strong>Ctrl+Alt+Esc</strong> 仍由主电脑本地处理，网络异常时也能紧急释放键盘。</p>
+        <p>这里仅观察两边鼠标是否有活动，不会捕获鼠标按键、移动鼠标位置或阻止鼠标返回。</p>
+      </article>
+      <article class="panel">
+        <h2>跟随灵敏度</h2>
+        <div class="actions">
+          ${actionButton("mouse-stable", "稳定", preset === "stable")}
+          ${actionButton("mouse-balanced", "平衡", preset === "balanced")}
+          ${actionButton("mouse-sensitive", "灵敏", preset === "sensitive")}
+        </div>
+        ${definitionList([
+          ["主电脑检测", `${status.config.mouseFollow.hostPollIntervalMs}ms`],
+          ["副电脑上报", `${status.config.mouseFollow.remoteReportIntervalMs}ms`],
+          ["主电脑优先冷却", `${status.config.mouseFollow.hostPriorityCooldownMs}ms`],
+          ["切换防抖", `${status.config.mouseFollow.switchDebounceMs}ms`]
+        ])}
       </article>
     </section>
   `;
@@ -391,7 +410,7 @@ function renderSettingsTab() {
         <h2>安全和发现</h2>
         ${toggleRow("自动寻找主电脑", "auto-discovery", status.config.autoDiscovery)}
         ${toggleRow("游戏模式", "game-mode", status.config.gameMode)}
-        <p class="hint">鼠标功能已在键盘专用稳定版中统一停用。</p>
+        <p class="hint">鼠标活动自动切换键盘已启用；跨电脑鼠标转发保持停用。</p>
       </article>
       <article class="panel wide">
         <h2>界面主题</h2>
@@ -449,6 +468,9 @@ function bindEvents() {
   onClick("game-mode", () => setGameMode(!status.config.gameMode));
   onClick("theme-light", () => setTheme("light"));
   onClick("theme-soft", () => setTheme("soft"));
+  onClick("mouse-stable", () => setMouseSensitivity("stable"));
+  onClick("mouse-balanced", () => setMouseSensitivity("balanced"));
+  onClick("mouse-sensitive", () => setMouseSensitivity("sensitive"));
   onClick("refresh-diagnostics", refreshDiagnostics);
   onClick("copy-logs", copyLogs);
   onClick("clear-logs", clearLogs);

@@ -2,13 +2,13 @@
 
 ## Who It Is For
 
-You want to use one ordinary keyboard on two Windows PCs. Devices Router fills that gap. `v0.1.30` temporarily disables mouse features.
+You want to use one ordinary keyboard on two Windows PCs. Devices Router observes mouse activity to select the keyboard target, but never forwards or suppresses the mouse.
 
 Recommended setup:
 
 - A physical keyboard is attached to the host PC.
 - The remote PC occasionally needs text, shortcuts, or code input.
-- Keyboard switching is done manually through buttons or hotkeys.
+- Moving the mouse on a PC automatically switches the keyboard target to that PC.
 - You do not want to buy a Logitech keyboard just for keyboard following.
 
 ## Install and Start
@@ -35,7 +35,12 @@ Remote PC:
 
 ## Daily Usage
 
-The keyboard-only stable release uses manual switching:
+Normally no manual switching is needed:
+
+- Move the mouse on the remote PC to switch the keyboard to remote.
+- Move the mouse on the host PC to return the keyboard to host.
+
+Manual switching is also available:
 
 - Click `Keyboard to host`
 - Click `Keyboard to remote`
@@ -50,7 +55,7 @@ The most important fields on the overview page are:
 - `Connection`: whether the two PCs are connected.
 - `Keyboard target`: where host keyboard input should go.
 
-If the target does not change after a manual switch, the control channel is not working.
+If the target does not change after mouse activity, mouse activity reporting or the control channel is not working.
 
 ## Log Buttons
 
@@ -88,7 +93,7 @@ The `Update` page has a `Start on login` option. The app remembers the last mode
 2. Start `Remote mode` on the remote PC.
 3. Confirm the remote shows `Connected`.
 4. Open Notepad on the remote PC.
-5. Press `Ctrl+Alt+2` on the host PC.
+5. Move the mouse on the remote PC.
 6. Type `hello123` on the host keyboard.
 7. If the text appears in the remote Notepad, the core path works.
 

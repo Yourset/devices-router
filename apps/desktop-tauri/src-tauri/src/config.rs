@@ -17,7 +17,7 @@ pub struct MouseFollowConfig {
 impl Default for MouseFollowConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             host_mouse_returns_local: true,
             remote_mouse_switches_remote: true,
             host_poll_interval_ms: 20,
@@ -97,7 +97,7 @@ impl AppConfig {
     fn normalize(&mut self) {
         self.experimental_mouse_input = false;
         self.mouse_input_initialized = true;
-        self.mouse_follow.enabled = false;
+        self.mouse_follow.enabled = true;
         if self.mouse_follow.host_poll_interval_ms == 50
             || self.mouse_follow.host_poll_interval_ms == 30
         {
@@ -188,7 +188,7 @@ mod tests {
         assert!(AppConfig::default().restore_last_mode);
         assert!(AppConfig::default().auto_discovery);
         assert!(!AppConfig::default().experimental_mouse_input);
-        assert!(!AppConfig::default().mouse_follow.enabled);
+        assert!(AppConfig::default().mouse_follow.enabled);
         assert_eq!(AppConfig::default().startup_mode, "last");
         assert_eq!(AppConfig::default().mouse_sensitivity, "balanced");
     }
@@ -237,7 +237,7 @@ mod tests {
     }
 
     #[test]
-    fn normalize_disables_mouse_features_for_keyboard_only_stable_release() {
+    fn normalize_keeps_activity_follow_but_disables_cross_screen_mouse() {
         let payload = r#"{
             "experimentalMouseInput": false,
             "gameMode": false,
@@ -249,7 +249,7 @@ mod tests {
         config.normalize();
 
         assert!(!config.experimental_mouse_input);
-        assert!(!config.mouse_follow.enabled);
+        assert!(config.mouse_follow.enabled);
         assert!(config.mouse_input_initialized);
     }
 }
