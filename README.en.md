@@ -1,8 +1,8 @@
 # Devices Router
 
-A small Windows utility that adds keyboard following to Logitech Flow setups.
+A small Windows utility that routes one ordinary keyboard between two Windows PCs.
 
-Logitech Flow keeps handling cross-computer mouse movement. Devices Router forwards keyboard input from the host PC to the remote PC. The intended experience is simple: start the app on both machines, move the mouse to a machine, and the keyboard follows.
+Devices Router forwards keyboard input from the host PC to the remote PC. `v0.1.29` is a keyboard-only stable release; mouse features are temporarily disabled.
 
 Language / 璇█: [绠€浣撲腑鏂嘳(README.md) | **English**
 
@@ -10,7 +10,7 @@ Language / 璇█: [绠€浣撲腑鏂嘳(README.md) | **English**
 
 - Platform: Windows -> Windows
 - Main implementation: Tauri/Rust desktop app in `apps/desktop-tauri/`
-- Current version: `v0.1.22`
+- Current version: `v0.1.29`
 - For normal users: install the `.exe` setup package. Node.js, Rust, Python, and other development dependencies are not required.
 - Ports:
   - TCP `8765`: keyboard events, control messages, heartbeat
@@ -22,7 +22,7 @@ Language / 璇█: [绠€浣撲腑鏂嘳(README.md) | **English**
 - Low-level keyboard hook on the host PC
 - Windows `SendInput` injection on the remote PC
 - Automatic discovery and reconnect
-- Mouse-activity based keyboard target switching
+- Manual keyboard target switching through buttons or hotkeys
 - Bidirectional heartbeat for connection state
 - LAN-based remote update from the host PC
 - Copy, export, and clear logs
@@ -35,7 +35,7 @@ Language / 璇█: [绠€浣撲腑鏂嘳(README.md) | **English**
 3. Open `Devices Router` on the host PC and click `Host mode`.
 4. Open `Devices Router` on the remote PC and click `Remote mode`.
 5. Focus Notepad, chat, an IDE, or any target input field on the remote PC.
-6. Move the mouse to the remote PC; the keyboard should follow. Move back to the host; the keyboard should return.
+6. Press `Ctrl+Alt+2` to send the keyboard to the remote PC, then press `Ctrl+Alt+1` to return it to the host PC.
 
 The ready-to-use installer does not require command line usage or a development environment. The source and build commands below are only for developers.
 
@@ -43,6 +43,7 @@ Manual switching is also available:
 
 - `Ctrl+Alt+1` on the host: keyboard back to host
 - `Ctrl+Alt+2` on the host: keyboard to remote
+- `Ctrl+Alt+Esc` on the host: emergency local release, independent of the network
 - App buttons: `Keyboard to host` / `Keyboard to remote`
 
 ## Auto Update
@@ -138,7 +139,7 @@ A browser page cannot inject system-level keyboard input into other Windows appl
 - Currently focused on Windows-to-Windows usage.
 - UAC, elevated windows, protected games, or security software may reject normal simulated input.
 - Chinese IME composition, complex shortcuts, and media keys may need more polish.
-- Mouse following is inferred from mouse activity on both machines. It does not read Logitech Flow's private protocol.
+- Mouse routing and mouse-activity switching are temporarily unavailable in `v0.1.29`.
 
 ## Project Positioning
 

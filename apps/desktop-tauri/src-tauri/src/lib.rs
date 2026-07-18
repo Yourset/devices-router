@@ -13,7 +13,6 @@ mod tray;
 mod updates;
 
 use app_state::{AppMode, AppStatus, KeyboardTarget, SharedState};
-use config::apply_mouse_sensitivity;
 use protocol::{BridgeEvent, TargetSide};
 use serde::Serialize;
 use std::net::{TcpStream, ToSocketAddrs};
@@ -110,7 +109,7 @@ fn set_keyboard_target(target: String, state: tauri::State<SharedState>) -> Resu
     }
 
     if target == KeyboardTarget::Local {
-        core::force_local_release(&runtime, "[主电脑] 手动安全释放：键盘和鼠标已回到主电脑\n");
+        core::force_local_release(&runtime, "[主电脑] 手动安全释放：键盘已回到主电脑\n");
     } else {
         runtime.set_target(target);
         keyboard_hook::set_key_suppression(true);
@@ -126,7 +125,7 @@ fn set_keyboard_target(target: String, state: tauri::State<SharedState>) -> Resu
 fn release_control(state: tauri::State<SharedState>) {
     core::force_local_release(
         &state.runtime(),
-        "[安全] 已立即释放控制：键盘和鼠标回到主电脑\n",
+        "[安全] 已立即释放控制：键盘回到主电脑\n",
     );
 }
 
@@ -229,34 +228,6 @@ fn set_game_mode(enabled: bool, state: tauri::State<SharedState>) {
     } else {
         "[配置] 已关闭游戏模式\n"
     });
-}
-
-#[tauri::command]
-fn set_experimental_mouse_input(enabled: bool, state: tauri::State<SharedState>) {
-    state.runtime().update_config(|config| {
-        config.experimental_mouse_input = enabled;
-        config.mouse_input_initialized = true;
-    });
-    state.runtime().log(if enabled {
-        "[config] experimental mouse input enabled\n"
-    } else {
-        "[config] experimental mouse input disabled\n"
-    });
-}
-
-#[tauri::command]
-fn set_mouse_sensitivity(preset: String, state: tauri::State<SharedState>) -> Result<(), String> {
-    if !matches!(preset.as_str(), "stable" | "balanced" | "sensitive") {
-        return Err(format!("Unsupported mouse sensitivity: {preset}"));
-    }
-    state.runtime().update_config(|config| {
-        config.mouse_sensitivity = preset.clone();
-        apply_mouse_sensitivity(&mut config.mouse_follow, &preset);
-    });
-    state
-        .runtime()
-        .log(format!("[配置] 鼠标跟随灵敏度已切换为：{preset}\n"));
-    Ok(())
 }
 
 #[tauri::command]
@@ -365,8 +336,6 @@ pub fn run() {
             set_minimize_to_tray,
             set_auto_discovery,
             set_game_mode,
-            set_experimental_mouse_input,
-            set_mouse_sensitivity,
             network_diagnostics
         ])
         .run(tauri::generate_context!())

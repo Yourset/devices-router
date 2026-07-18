@@ -26,6 +26,7 @@ use std::time::{Duration, Instant};
 const TCP_PORT: u16 = 8765;
 const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(300);
 const LOCAL_RELEASE_COOLDOWN: Duration = Duration::from_secs(1);
+const MOUSE_FEATURES_AVAILABLE: bool = false;
 
 struct HostSessionSafetyGuard {
     runtime: Arc<AppRuntime>,
@@ -41,7 +42,7 @@ impl Drop for HostSessionSafetyGuard {
     fn drop(&mut self) {
         force_local_release(
             &self.runtime,
-            "[host] connection ended: local keyboard and mouse released\n",
+            "[host] connection ended: local keyboard released\n",
         );
     }
 }
@@ -98,15 +99,17 @@ fn run_host(runtime: Arc<AppRuntime>) -> Result<()> {
             }
         })
         .context("spawn keyboard hook thread")?;
-    let mouse_hook_runtime = Arc::clone(&runtime);
-    thread::Builder::new()
-        .name("devices-router-mouse-hook".to_string())
-        .spawn(move || {
-            if let Err(err) = run_mouse_hook(mouse_tx) {
-                mouse_hook_runtime.log(format!("[host] mouse hook failed: {err:#}\n"));
-            }
-        })
-        .context("spawn mouse hook thread")?;
+    if MOUSE_FEATURES_AVAILABLE {
+        let mouse_hook_runtime = Arc::clone(&runtime);
+        thread::Builder::new()
+            .name("devices-router-mouse-hook".to_string())
+            .spawn(move || {
+                if let Err(err) = run_mouse_hook(mouse_tx) {
+                    mouse_hook_runtime.log(format!("[host] mouse hook failed: {err:#}\n"));
+                }
+            })
+            .context("spawn mouse hook thread")?;
+    }
     let discovery_runtime = Arc::clone(&runtime);
     thread::Builder::new()
         .name("devices-router-discovery-broadcast".to_string())
@@ -127,11 +130,13 @@ fn run_host(runtime: Arc<AppRuntime>) -> Result<()> {
             }
         })
         .context("spawn update server")?;
-    let mouse_runtime = Arc::clone(&runtime);
-    thread::Builder::new()
-        .name("devices-router-host-mouse".to_string())
-        .spawn(move || run_host_mouse_loop(mouse_runtime))
-        .context("spawn host mouse loop")?;
+    if MOUSE_FEATURES_AVAILABLE {
+        let mouse_runtime = Arc::clone(&runtime);
+        thread::Builder::new()
+            .name("devices-router-host-mouse".to_string())
+            .spawn(move || run_host_mouse_loop(mouse_runtime))
+            .context("spawn host mouse loop")?;
+    }
 
     let listener = TcpListener::bind(("0.0.0.0", TCP_PORT)).context("bind host TCP listener")?;
     listener
@@ -447,7 +452,8 @@ fn handle_host_client(
                 Ok(BridgeEvent::MouseActivity {
                     source: MouseSource::Remote,
                 }) => {
-                    if should_accept_remote_mouse_activity(
+                    if MOUSE_FEATURES_AVAILABLE
+                        && should_accept_remote_mouse_activity(
                         last_switch.elapsed(),
                         last_local_release.elapsed(),
                         Duration::from_millis(runtime.config().mouse_follow.switch_debounce_ms),
@@ -701,11 +707,13 @@ fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
                         }
                     })
                     .context("spawn remote writer loop")?;
-                let mouse_runtime = Arc::clone(&runtime);
-                thread::Builder::new()
-                    .name("devices-router-remote-mouse".to_string())
-                    .spawn(move || run_remote_mouse_loop(mouse_runtime, event_tx))
-                    .context("spawn remote mouse loop")?;
+                if MOUSE_FEATURES_AVAILABLE {
+                    let mouse_runtime = Arc::clone(&runtime);
+                    thread::Builder::new()
+                        .name("devices-router-remote-mouse".to_string())
+                        .spawn(move || run_remote_mouse_loop(mouse_runtime, event_tx))
+                        .context("spawn remote mouse loop")?;
+                }
                 let mut reader = BufReader::new(stream);
                 let mut line = String::new();
                 let mut received_key_logs = 0_u8;
@@ -786,7 +794,7 @@ fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
 }
 
 fn should_accept_mouse_input(config: &AppConfig) -> bool {
-    config.experimental_mouse_input && !config.game_mode
+    MOUSE_FEATURES_AVAILABLE && config.experimental_mouse_input && !config.game_mode
 }
 
 fn should_suppress_local_mouse_input(config: &AppConfig, target: KeyboardTarget) -> bool {
@@ -956,23 +964,27 @@ mod tests {
     }
 
     #[test]
-    fn mouse_input_is_enabled_by_default_and_blocked_by_game_mode() {
-        let mut config = AppConfig::default();
-        assert!(should_accept_mouse_input(&config));
+    fn mouse_input_is_disabled_even_if_legacy_config_requests_it() {
+        let mut config = AppConfig {
+            experimental_mouse_input: true,
+            ..AppConfig::default()
+        };
+        assert!(!should_accept_mouse_input(&config));
 
         config.game_mode = true;
         assert!(!should_accept_mouse_input(&config));
     }
 
     #[test]
-    fn local_mouse_events_are_suppressed_only_while_controlling_remote() {
+    fn local_mouse_events_are_never_suppressed_in_keyboard_only_release() {
         let mut config = AppConfig::default();
 
         assert!(!should_suppress_local_mouse_input(
             &config,
             KeyboardTarget::Local
         ));
-        assert!(should_suppress_local_mouse_input(
+        config.experimental_mouse_input = true;
+        assert!(!should_suppress_local_mouse_input(
             &config,
             KeyboardTarget::Remote
         ));

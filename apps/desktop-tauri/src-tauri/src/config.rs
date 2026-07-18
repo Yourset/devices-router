@@ -17,7 +17,7 @@ pub struct MouseFollowConfig {
 impl Default for MouseFollowConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: false,
             host_mouse_returns_local: true,
             remote_mouse_switches_remote: true,
             host_poll_interval_ms: 20,
@@ -66,7 +66,7 @@ impl Default for AppConfig {
             minimize_to_tray: false,
             auto_discovery: true,
             game_mode: false,
-            experimental_mouse_input: true,
+            experimental_mouse_input: false,
             mouse_input_initialized: true,
             theme: "light".to_string(),
         }
@@ -95,10 +95,9 @@ impl AppConfig {
     }
 
     fn normalize(&mut self) {
-        if !self.mouse_input_initialized {
-            self.experimental_mouse_input = true;
-            self.mouse_input_initialized = true;
-        }
+        self.experimental_mouse_input = false;
+        self.mouse_input_initialized = true;
+        self.mouse_follow.enabled = false;
         if self.mouse_follow.host_poll_interval_ms == 50
             || self.mouse_follow.host_poll_interval_ms == 30
         {
@@ -188,7 +187,8 @@ mod tests {
         assert_eq!(AppConfig::default().theme, "light");
         assert!(AppConfig::default().restore_last_mode);
         assert!(AppConfig::default().auto_discovery);
-        assert!(AppConfig::default().experimental_mouse_input);
+        assert!(!AppConfig::default().experimental_mouse_input);
+        assert!(!AppConfig::default().mouse_follow.enabled);
         assert_eq!(AppConfig::default().startup_mode, "last");
         assert_eq!(AppConfig::default().mouse_sensitivity, "balanced");
     }
@@ -237,7 +237,7 @@ mod tests {
     }
 
     #[test]
-    fn normalize_enables_mouse_input_once_for_pre_0124_configs() {
+    fn normalize_disables_mouse_features_for_keyboard_only_stable_release() {
         let payload = r#"{
             "experimentalMouseInput": false,
             "gameMode": false,
@@ -248,11 +248,8 @@ mod tests {
         assert!(!config.mouse_input_initialized);
         config.normalize();
 
-        assert!(config.experimental_mouse_input);
-        assert!(config.mouse_input_initialized);
-
-        config.experimental_mouse_input = false;
-        config.normalize();
         assert!(!config.experimental_mouse_input);
+        assert!(!config.mouse_follow.enabled);
+        assert!(config.mouse_input_initialized);
     }
 }

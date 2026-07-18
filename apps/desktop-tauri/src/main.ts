@@ -88,11 +88,11 @@ let status: AppStatus = {
     minimizeToTray: false,
     autoDiscovery: true,
     gameMode: false,
-    experimentalMouseInput: true,
+    experimentalMouseInput: false,
     theme: "light",
     mouseSensitivity: "balanced",
     mouseFollow: {
-      enabled: true,
+      enabled: false,
       hostMouseReturnsLocal: true,
       remoteMouseSwitchesRemote: true,
       hostPollIntervalMs: 20,
@@ -175,14 +175,6 @@ async function setGameMode(enabled: boolean) {
   await runAction("game-mode", () => invoke("set_game_mode", { enabled }));
 }
 
-async function setExperimentalMouseInput(enabled: boolean) {
-  await runAction("experimental-mouse-input", () => invoke("set_experimental_mouse_input", { enabled }));
-}
-
-async function setMouseSensitivity(preset: MouseSensitivity) {
-  await runAction(`mouse-${preset}`, () => invoke("set_mouse_sensitivity", { preset }));
-}
-
 async function refreshDiagnostics() {
   diagnostics = await invoke<NetworkDiagnostics>("network_diagnostics");
   render();
@@ -224,7 +216,7 @@ function render() {
       <aside class="sidebar">
         <div class="brand">Devices Router</div>
         ${navButton("overview", "总览")}
-        ${navButton("mouse", "鼠标跟随")}
+        ${navButton("mouse", "鼠标（暂停）")}
         ${navButton("network", "网络诊断")}
         ${navButton("update", "更新")}
         ${navButton("settings", "设置")}
@@ -285,7 +277,7 @@ function renderOverviewTab() {
       </article>
       <article class="panel wide">
         <h2>控制切换与安全释放</h2>
-        <p>紧急情况按 <strong>Ctrl+Alt+Esc</strong>，即使副电脑断线也会在主电脑本地解除键盘和鼠标拦截。</p>
+        <p>稳定版暂时只启用键盘。按 <strong>Ctrl+Alt+2</strong> 把键盘切到副电脑，按 <strong>Ctrl+Alt+1</strong> 切回主电脑；紧急情况按 <strong>Ctrl+Alt+Esc</strong>。</p>
         <div class="actions">
           ${actionButton("release-control", "立即回到主电脑", status.target === "local")}
           ${actionButton("target-local", "键盘到主电脑", status.target === "local")}
@@ -297,39 +289,22 @@ function renderOverviewTab() {
 }
 
 function renderMouseTab() {
-  const preset = status.config.mouseSensitivity;
   return `
     <section class="workspace">
-      <article class="panel">
-        <h2>鼠标跟随</h2>
-        <p>支持任意 Windows 鼠标，不需要 Logitech Flow。从主电脑右边缘向右划入副电脑；在副电脑左边缘继续向左即可划回。</p>
+      <article class="panel wide">
+        <h2>鼠标功能暂时停用</h2>
+        <p>为了先恢复一个可靠版本，本版不会捕获、拦截或转发鼠标，也不会根据鼠标活动自动切换键盘。</p>
+        <p>当前请手动切换键盘：<strong>Ctrl+Alt+2</strong> 到副电脑，<strong>Ctrl+Alt+1</strong> 回主电脑。</p>
         <div class="actions">
           ${actionButton("release-control", "立即回到主电脑", status.target === "local")}
-        </div>
-        <p><strong>安全键：Ctrl+Alt+Esc。</strong>此快捷键由主电脑本地处理，不依赖副电脑或网络。</p>
-        ${toggleRow("跨电脑鼠标控制", "experimental-mouse-input", status.config.experimentalMouseInput)}
-        ${definitionList([
-          ["跨电脑控制", onOff(status.config.experimentalMouseInput)],
-          ["自动跟随", onOff(status.config.mouseFollow.enabled)],
-          ["主电脑移动切回", onOff(status.config.mouseFollow.hostMouseReturnsLocal)],
-          ["副电脑移动切过去", onOff(status.config.mouseFollow.remoteMouseSwitchesRemote)],
-          ["游戏模式", onOff(status.config.gameMode)]
-        ])}
-        <p>游戏模式会禁用跨电脑鼠标输入，避免在全屏游戏中抢走控制权。</p>
-      </article>
-      <article class="panel">
-        <h2>灵敏度</h2>
-        <div class="actions">
-          ${actionButton("mouse-stable", "稳定", preset === "stable")}
-          ${actionButton("mouse-balanced", "平衡", preset === "balanced")}
-          ${actionButton("mouse-sensitive", "灵敏", preset === "sensitive")}
+          ${actionButton("target-remote", "键盘到副电脑", status.target === "remote")}
         </div>
         ${definitionList([
-          ["主电脑轮询", `${status.config.mouseFollow.hostPollIntervalMs}ms`],
-          ["副电脑上报", `${status.config.mouseFollow.remoteReportIntervalMs}ms`],
-          ["主电脑优先冷却", `${status.config.mouseFollow.hostPriorityCooldownMs}ms`],
-          ["切换防抖", `${status.config.mouseFollow.switchDebounceMs}ms`]
+          ["跨电脑鼠标", "暂时不可用"],
+          ["鼠标自动切换键盘", "暂时不可用"],
+          ["跨电脑键盘", "可用"]
         ])}
+        <p><strong>Ctrl+Alt+Esc</strong> 仍由主电脑本地处理，网络异常时也能紧急释放键盘。</p>
       </article>
     </section>
   `;
@@ -416,7 +391,7 @@ function renderSettingsTab() {
         <h2>安全和发现</h2>
         ${toggleRow("自动寻找主电脑", "auto-discovery", status.config.autoDiscovery)}
         ${toggleRow("游戏模式", "game-mode", status.config.gameMode)}
-        ${toggleRow("实验性鼠标输入", "experimental-mouse-input", status.config.experimentalMouseInput)}
+        <p class="hint">鼠标功能已在键盘专用稳定版中统一停用。</p>
       </article>
       <article class="panel wide">
         <h2>界面主题</h2>
@@ -472,12 +447,8 @@ function bindEvents() {
   onClick("minimize-on-start", () => setMinimizeOnStart(!status.config.minimizeToTray));
   onClick("auto-discovery", () => setAutoDiscovery(!status.config.autoDiscovery));
   onClick("game-mode", () => setGameMode(!status.config.gameMode));
-  onClick("experimental-mouse-input", () => setExperimentalMouseInput(!status.config.experimentalMouseInput));
   onClick("theme-light", () => setTheme("light"));
   onClick("theme-soft", () => setTheme("soft"));
-  onClick("mouse-stable", () => setMouseSensitivity("stable"));
-  onClick("mouse-balanced", () => setMouseSensitivity("balanced"));
-  onClick("mouse-sensitive", () => setMouseSensitivity("sensitive"));
   onClick("refresh-diagnostics", refreshDiagnostics);
   onClick("copy-logs", copyLogs);
   onClick("clear-logs", clearLogs);

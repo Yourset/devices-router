@@ -2,13 +2,13 @@
 
 ## Who It Is For
 
-You already have Logitech Flow working, so your mouse can move between two PCs, but a normal keyboard does not follow. Devices Router fills that gap.
+You want to use one ordinary keyboard on two Windows PCs. Devices Router fills that gap. `v0.1.29` temporarily disables mouse features.
 
 Recommended setup:
 
 - A physical keyboard is attached to the host PC.
 - The remote PC occasionally needs text, shortcuts, or code input.
-- Logitech Flow still handles mouse movement.
+- Keyboard switching is done manually through buttons or hotkeys.
 - You do not want to buy a Logitech keyboard just for keyboard following.
 
 ## Install and Start
@@ -35,12 +35,7 @@ Remote PC:
 
 ## Daily Usage
 
-Normally you do not need manual switching:
-
-- Move the mouse on the remote PC, and the keyboard switches to the remote PC.
-- Move the mouse on the host PC, and the keyboard returns to the host PC.
-
-Manual switching is available:
+The keyboard-only stable release uses manual switching:
 
 - Click `Keyboard to host`
 - Click `Keyboard to remote`
@@ -55,7 +50,7 @@ The most important fields on the overview page are:
 - `Connection`: whether the two PCs are connected.
 - `Keyboard target`: where host keyboard input should go.
 
-If you move the mouse on the remote PC but the target does not become remote, mouse activity reporting or the control channel is not working.
+If the target does not change after a manual switch, the control channel is not working.
 
 ## Log Buttons
 
@@ -93,12 +88,12 @@ The `Update` page has a `Start on login` option. The app remembers the last mode
 2. Start `Remote mode` on the remote PC.
 3. Confirm the remote shows `Connected`.
 4. Open Notepad on the remote PC.
-5. Move the mouse on the remote PC.
+5. Press `Ctrl+Alt+2` on the host PC.
 6. Type `hello123` on the host keyboard.
 7. If the text appears in the remote Notepad, the core path works.
 
 ## Boundaries
 
-This is not a full KVM and not a Logitech Flow plugin. It does not read Flow's private state; it infers the current target from mouse activity on both machines.
+This is not a full KVM and not a Logitech Flow plugin. The current stable release routes keyboard input only.
 
 UAC prompts, elevated windows, some games, or protected windows may reject simulated input because of Windows security boundaries.
