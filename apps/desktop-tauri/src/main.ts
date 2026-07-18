@@ -138,6 +138,10 @@ async function setKeyboardTarget(target: KeyboardTarget) {
   await runAction(`target-${target}`, () => invoke("set_keyboard_target", { target }));
 }
 
+async function releaseControl() {
+  await runAction("release-control", () => invoke("release_control"));
+}
+
 async function restartAsAdmin() {
   await runAction("restart-admin", () => invoke("restart_as_admin"));
 }
@@ -280,8 +284,10 @@ function renderOverviewTab() {
         ${renderElevationHint()}
       </article>
       <article class="panel wide">
-        <h2>键盘切换</h2>
+        <h2>控制切换与安全释放</h2>
+        <p>紧急情况按 <strong>Ctrl+Alt+Esc</strong>，即使副电脑断线也会在主电脑本地解除键盘和鼠标拦截。</p>
         <div class="actions">
+          ${actionButton("release-control", "立即回到主电脑", status.target === "local")}
           ${actionButton("target-local", "键盘到主电脑", status.target === "local")}
           ${actionButton("target-remote", "键盘到副电脑", status.target === "remote")}
         </div>
@@ -296,7 +302,11 @@ function renderMouseTab() {
     <section class="workspace">
       <article class="panel">
         <h2>鼠标跟随</h2>
-        <p>支持任意 Windows 鼠标，不需要 Logitech Flow。两台电脑都开启后，从主电脑右边缘向右划入副电脑。</p>
+        <p>支持任意 Windows 鼠标，不需要 Logitech Flow。从主电脑右边缘向右划入副电脑；在副电脑左边缘继续向左即可划回。</p>
+        <div class="actions">
+          ${actionButton("release-control", "立即回到主电脑", status.target === "local")}
+        </div>
+        <p><strong>安全键：Ctrl+Alt+Esc。</strong>此快捷键由主电脑本地处理，不依赖副电脑或网络。</p>
         ${toggleRow("跨电脑鼠标控制", "experimental-mouse-input", status.config.experimentalMouseInput)}
         ${definitionList([
           ["跨电脑控制", onOff(status.config.experimentalMouseInput)],
@@ -451,6 +461,7 @@ function bindEvents() {
   onClick("save-host", saveRemoteHost);
   onClick("target-local", () => setKeyboardTarget("local"));
   onClick("target-remote", () => setKeyboardTarget("remote"));
+  onClick("release-control", releaseControl);
   onClick("restart-admin", restartAsAdmin);
   onClick("start-login", () => setStartOnLogin(!status.config.startOnLogin));
   onClick("restore-last-mode", () => setRestoreLastMode(!status.config.restoreLastMode));

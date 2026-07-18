@@ -82,6 +82,7 @@ struct InnerState {
     config: AppConfig,
     remote_sender: Option<mpsc::Sender<BridgeEvent>>,
     remote_sender_generation: u64,
+    local_release_generation: u64,
 }
 
 impl SharedState {
@@ -97,6 +98,7 @@ impl SharedState {
                     config: AppConfig::load(),
                     remote_sender: None,
                     remote_sender_generation: 0,
+                    local_release_generation: 0,
                 }),
                 stop: AtomicBool::new(false),
             }),
@@ -233,6 +235,16 @@ impl AppRuntime {
         };
         sender.is_some_and(|sender| sender.send(event).is_ok())
     }
+
+    pub fn mark_local_release(&self) {
+        let mut inner = self.state.lock().expect("state lock poisoned");
+        inner.local_release_generation = inner.local_release_generation.wrapping_add(1);
+    }
+
+    pub fn local_release_generation(&self) -> u64 {
+        let inner = self.state.lock().expect("state lock poisoned");
+        inner.local_release_generation
+    }
 }
 
 fn push_log(logs: &mut VecDeque<String>, line: String) {
@@ -250,5 +262,16 @@ mod tests {
     fn app_mode_round_trips() {
         assert_eq!(AppMode::from_str("host"), Some(AppMode::Host));
         assert_eq!(AppMode::Remote.as_str(), "remote");
+    }
+
+    #[test]
+    fn local_release_generation_increments() {
+        let state = SharedState::new("test");
+        let runtime = state.runtime();
+        let before = runtime.local_release_generation();
+
+        runtime.mark_local_release();
+
+        assert_eq!(runtime.local_release_generation(), before.wrapping_add(1));
     }
 }

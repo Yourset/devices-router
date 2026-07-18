@@ -7,6 +7,7 @@ use tauri::tray::TrayIconBuilder;
 use tauri::{App, Manager};
 
 const SHOW_WINDOW_ID: &str = "show-main-window";
+const RELEASE_CONTROL_ID: &str = "release-control";
 const QUIT_ID: &str = "quit-devices-router";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -52,17 +53,40 @@ pub fn install_tray(app: &App, state: SharedState) -> tauri::Result<()> {
         false,
         None::<&str>,
     )?;
+    let release_item = MenuItem::with_id(
+        app,
+        RELEASE_CONTROL_ID,
+        "立即释放控制（Ctrl+Alt+Esc）",
+        true,
+        None::<&str>,
+    )?;
     let show_item = MenuItem::with_id(app, SHOW_WINDOW_ID, "显示窗口", true, None::<&str>)?;
     let quit_item = MenuItem::with_id(app, QUIT_ID, "退出", true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
-    let menu = Menu::with_items(app, &[&status_item, &separator, &show_item, &quit_item])?;
+    let menu = Menu::with_items(
+        app,
+        &[
+            &status_item,
+            &release_item,
+            &separator,
+            &show_item,
+            &quit_item,
+        ],
+    )?;
     let initial_state = tray_state(&state.snapshot());
+    let menu_state = state.clone();
     let tray = TrayIconBuilder::with_id("devices-router-status")
         .menu(&menu)
         .icon(tray_icon(initial_state))
         .tooltip(tray_label(initial_state))
         .show_menu_on_left_click(true)
-        .on_menu_event(|app, event| match event.id().as_ref() {
+        .on_menu_event(move |app, event| match event.id().as_ref() {
+            RELEASE_CONTROL_ID => {
+                crate::core::force_local_release(
+                    &menu_state.runtime(),
+                    "[安全] 托盘已立即释放控制：键盘和鼠标回到主电脑\n",
+                );
+            }
             SHOW_WINDOW_ID => show_main_window(app),
             QUIT_ID => app.exit(0),
             _ => {}

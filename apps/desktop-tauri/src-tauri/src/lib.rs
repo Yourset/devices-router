@@ -109,13 +109,25 @@ fn set_keyboard_target(target: String, state: tauri::State<SharedState>) -> Resu
         return Ok(());
     }
 
-    runtime.set_target(target);
-    keyboard_hook::set_key_suppression(target == KeyboardTarget::Remote);
+    if target == KeyboardTarget::Local {
+        core::force_local_release(&runtime, "[主电脑] 手动安全释放：键盘和鼠标已回到主电脑\n");
+    } else {
+        runtime.set_target(target);
+        keyboard_hook::set_key_suppression(true);
+    }
     runtime.log(format!(
         "[主电脑] 键盘目标已手动切到：{}\n",
         keyboard_target_label(target)
     ));
     Ok(())
+}
+
+#[tauri::command]
+fn release_control(state: tauri::State<SharedState>) {
+    core::force_local_release(
+        &state.runtime(),
+        "[安全] 已立即释放控制：键盘和鼠标回到主电脑\n",
+    );
 }
 
 fn keyboard_target_label(target: KeyboardTarget) -> &'static str {
@@ -345,6 +357,7 @@ pub fn run() {
             clear_logs,
             set_remote_host,
             set_keyboard_target,
+            release_control,
             set_theme,
             set_start_on_login,
             set_restore_last_mode,

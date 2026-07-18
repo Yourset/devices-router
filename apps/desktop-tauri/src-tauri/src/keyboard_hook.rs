@@ -19,9 +19,33 @@ pub struct RawKeyEvent {
 
 static KEY_SENDER: OnceLock<Mutex<Option<Sender<RawKeyEvent>>>> = OnceLock::new();
 static SUPPRESS_KEYS: AtomicBool = AtomicBool::new(false);
+static PANIC_REQUESTED: AtomicBool = AtomicBool::new(false);
+static PANIC_CHORD: OnceLock<Mutex<PanicChordState>> = OnceLock::new();
+
+#[derive(Default)]
+struct PanicChordState {
+    ctrl_down: bool,
+    alt_down: bool,
+}
+
+impl PanicChordState {
+    fn observe(&mut self, vk_code: u32, is_down: bool) -> bool {
+        match vk_code {
+            0x11 | 0xA2 | 0xA3 => self.ctrl_down = is_down,
+            0x12 | 0xA4 | 0xA5 => self.alt_down = is_down,
+            0x1B if is_down => return self.ctrl_down && self.alt_down,
+            _ => {}
+        }
+        false
+    }
+}
 
 pub fn set_key_suppression(enabled: bool) {
     SUPPRESS_KEYS.store(enabled, Ordering::SeqCst);
+}
+
+pub fn take_panic_request() -> bool {
+    PANIC_REQUESTED.swap(false, Ordering::SeqCst)
 }
 
 pub fn run_keyboard_hook(sender: Sender<RawKeyEvent>) -> Result<()> {
@@ -47,6 +71,17 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
         let is_up = message == WM_KEYUP || message == WM_SYSKEYUP;
         if is_down || is_up {
             let info = *(lparam.0 as *const KBDLLHOOKSTRUCT);
+            let panic_triggered = PANIC_CHORD
+                .get_or_init(|| Mutex::new(PanicChordState::default()))
+                .lock()
+                .expect("panic chord lock poisoned")
+                .observe(info.vkCode, is_down);
+            if panic_triggered {
+                SUPPRESS_KEYS.store(false, Ordering::SeqCst);
+                crate::mouse_hook::set_mouse_input_suppression(false);
+                PANIC_REQUESTED.store(true, Ordering::SeqCst);
+                return LRESULT(1);
+            }
             if let Some(slot) = KEY_SENDER.get() {
                 if let Some(sender) = slot.lock().expect("keyboard sender lock poisoned").as_ref() {
                     let _ = sender.send(RawKeyEvent {
@@ -130,5 +165,25 @@ mod tests {
         normalize_text_keyboard_state(&mut state);
 
         assert_eq!(state[0x90], 0);
+    }
+
+    #[test]
+    fn panic_chord_activates_only_for_ctrl_alt_escape() {
+        let mut chord = PanicChordState::default();
+
+        assert!(!chord.observe(0x11, true));
+        assert!(!chord.observe(0x12, true));
+        assert!(chord.observe(0x1B, true));
+    }
+
+    #[test]
+    fn panic_chord_rejects_plain_escape_and_resets_modifiers() {
+        let mut chord = PanicChordState::default();
+
+        assert!(!chord.observe(0x1B, true));
+        assert!(!chord.observe(0x11, true));
+        assert!(!chord.observe(0x12, true));
+        assert!(!chord.observe(0x12, false));
+        assert!(!chord.observe(0x1B, true));
     }
 }

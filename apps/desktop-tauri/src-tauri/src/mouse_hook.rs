@@ -6,8 +6,8 @@ use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, DispatchMessageW, GetMessageW, SetWindowsHookExW, TranslateMessage,
-    LLMHF_INJECTED, MSG, MSLLHOOKSTRUCT, WH_MOUSE_LL, WM_LBUTTONDOWN, WM_LBUTTONUP,
-    WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_RBUTTONUP,
+    LLMHF_INJECTED, MSG, MSLLHOOKSTRUCT, WH_MOUSE_LL, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN,
+    WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_RBUTTONUP,
 };
 
 use crate::protocol::{MouseButton, MouseButtonAction, MouseInputEvent};
@@ -42,7 +42,8 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
         if !injected {
             if let Some(event) = decode_mouse_message(wparam.0 as u32, info.mouseData) {
                 if let Some(slot) = MOUSE_SENDER.get() {
-                    if let Some(sender) = slot.lock().expect("mouse sender lock poisoned").as_ref() {
+                    if let Some(sender) = slot.lock().expect("mouse sender lock poisoned").as_ref()
+                    {
                         let _ = sender.send(event);
                     }
                 }
@@ -83,8 +84,8 @@ mod tests {
     use super::*;
     use crate::protocol::{MouseButton, MouseButtonAction, MouseInputEvent};
     use windows::Win32::UI::WindowsAndMessaging::{
-        WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL,
-        WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_RBUTTONUP,
+        WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEWHEEL,
+        WM_RBUTTONDOWN, WM_RBUTTONUP,
     };
 
     #[test]
