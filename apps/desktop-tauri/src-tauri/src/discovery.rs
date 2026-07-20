@@ -135,6 +135,9 @@ fn verifies_devices_router_host(address: SocketAddr, timeout: Duration) -> bool 
     let _ = stream.set_write_timeout(Some(timeout));
     let Ok(hello) = encode_event(&BridgeEvent::ClientHello {
         role: ClientRole::Remote,
+        device_id: None,
+        device_name: None,
+        capabilities: vec!["discovery_probe".to_string()],
     }) else {
         return false;
     };

@@ -685,8 +685,15 @@ fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
             Ok(mut stream) => {
                 runtime.log(format!("[副电脑] 已连接主电脑：{target}\n"));
                 runtime.set_connected(true);
+                let config = runtime.config();
                 stream.write_all(&encode_event(&BridgeEvent::ClientHello {
                     role: ClientRole::Remote,
+                    device_id: Some(config.device_id),
+                    device_name: Some(crate::config::computer_name()),
+                    capabilities: vec![
+                        "multi_remote_v1".to_string(),
+                        "server_hello_v1".to_string(),
+                    ],
                 })?)?;
                 if let Ok(address) = stream.peer_addr() {
                     if let Some(host) = host_from_socket_addr(&address) {

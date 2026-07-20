@@ -3,7 +3,22 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum BridgeEvent {
-    ClientHello { role: ClientRole },
+    ClientHello {
+        role: ClientRole,
+        #[serde(default, rename = "deviceId", skip_serializing_if = "Option::is_none")]
+        device_id: Option<String>,
+        #[serde(default, rename = "deviceName", skip_serializing_if = "Option::is_none")]
+        device_name: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        capabilities: Vec<String>,
+    },
+    ServerHello {
+        accepted: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        #[serde(rename = "maxDevices")]
+        max_devices: u8,
+    },
     Ping { message: String },
     MouseActivity { source: MouseSource },
     MouseInput { event: MouseInputEvent },
@@ -123,12 +138,44 @@ mod tests {
     fn client_hello_round_trips() {
         let event = BridgeEvent::ClientHello {
             role: ClientRole::Remote,
+            device_id: Some("device-a".to_string()),
+            device_name: Some("Office-PC".to_string()),
+            capabilities: vec!["multi_remote_v1".to_string()],
         };
 
         let payload = encode_event(&event).unwrap();
 
         assert!(payload.ends_with(b"\n"));
         assert_eq!(decode_event(&payload).unwrap(), event);
+    }
+
+    #[test]
+    fn legacy_client_hello_without_identity_is_accepted() {
+        let payload = br#"{"type":"client_hello","role":"remote"}"#;
+
+        assert_eq!(
+            decode_event(payload).unwrap(),
+            BridgeEvent::ClientHello {
+                role: ClientRole::Remote,
+                device_id: None,
+                device_name: None,
+                capabilities: Vec::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn server_hello_rejection_round_trips() {
+        let event = BridgeEvent::ServerHello {
+            accepted: false,
+            reason: Some("??????????".to_string()),
+            max_devices: 2,
+        };
+
+        assert_eq!(
+            decode_event(&encode_event(&event).unwrap()).unwrap(),
+            event
+        );
     }
 
     #[test]
