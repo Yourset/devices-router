@@ -105,18 +105,18 @@ let status: AppStatus = {
 
 async function refreshStatus() {
   status = await invoke<AppStatus>("app_status");
-  render();
+  updateStatusView();
 }
 
 async function runAction(name: string, action: () => Promise<unknown>) {
   pendingAction = name;
-  render();
+  updateStatusView();
   try {
     await action();
     await refreshStatus();
   } finally {
     pendingAction = null;
-    render();
+    updateStatusView();
   }
 }
 
@@ -181,7 +181,7 @@ async function setMouseSensitivity(preset: MouseSensitivity) {
 
 async function refreshDiagnostics() {
   diagnostics = await invoke<NetworkDiagnostics>("network_diagnostics");
-  render();
+  updateStatusView();
 }
 
 async function copyLogs() {
@@ -210,13 +210,8 @@ function downloadLogs() {
 }
 
 function render() {
-  if (document.activeElement instanceof HTMLInputElement) return;
-  const oldLog = document.querySelector<HTMLTextAreaElement>("#log-text");
-  const oldScrollTop = oldLog?.scrollTop ?? 0;
-  const wasAtBottom = oldLog ? oldLog.scrollTop + oldLog.clientHeight >= oldLog.scrollHeight - 24 : true;
-
   appRoot.innerHTML = `
-    <main class="shell theme-${status.config.theme}">
+    <main id="app-shell" class="shell theme-${status.config.theme}">
       <aside class="sidebar">
         <div class="brand">Devices Router</div>
         ${navButton("overview", "总览")}
@@ -229,21 +224,85 @@ function render() {
         <header class="topbar">
           <div>
             <h1>键盘跟随控制台</h1>
-            <p>版本 v${status.version}</p>
+            <p>版本 <span id="app-version">v${status.version}</span></p>
           </div>
-          <div class="badge ${status.running ? "ok" : ""}">${status.running ? "运行中" : "未启动"}</div>
+          <div id="status-badge" class="badge ${status.running ? "ok" : ""}">${status.running ? "运行中" : "未启动"}</div>
         </header>
-        ${renderTab()}
+        ${renderTabContainer()}
         ${renderLogs()}
       </section>
     </main>
   `;
 
   bindEvents();
-  const newLog = document.querySelector<HTMLTextAreaElement>("#log-text");
-  if (newLog) {
-    newLog.scrollTop = autoFollowLogs && wasAtBottom ? newLog.scrollHeight : oldScrollTop;
+}
+
+function updateStatusView() {
+  const shell = document.querySelector<HTMLElement>("#app-shell");
+  if (!shell) {
+    render();
+    return;
   }
+
+  shell.className = `shell theme-${status.config.theme}`;
+
+  const version = document.querySelector<HTMLElement>("#app-version");
+  if (version) version.textContent = `v${status.version}`;
+
+  const badge = document.querySelector<HTMLElement>("#status-badge");
+  if (badge) {
+    badge.textContent = status.running ? "运行中" : "未启动";
+    badge.classList.toggle("ok", status.running);
+  }
+
+  updateTabView();
+  updateLogView();
+}
+
+function renderTabContainer() {
+  return `<div id="tab-content" class="tab-content">${renderTab()}</div>`;
+}
+
+function updateTabView(force = false) {
+  const current = document.querySelector<HTMLElement>("#tab-content");
+  if (!current) return;
+  const editingField =
+    document.activeElement instanceof HTMLInputElement ||
+    document.activeElement instanceof HTMLTextAreaElement;
+  if (!force && editingField && current.contains(document.activeElement)) return;
+
+  const template = document.createElement("template");
+  template.innerHTML = renderTabContainer().trim();
+  const next = template.content.firstElementChild as HTMLElement | null;
+  if (!next || (!force && current.outerHTML === next.outerHTML)) return;
+
+  current.replaceWith(next);
+  bindTabEvents();
+}
+
+function updateLogView() {
+  const log = document.querySelector<HTMLTextAreaElement>("#log-text");
+  if (!log) return;
+
+  const wasAtBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 24;
+  const previousScrollTop = log.scrollTop;
+  const nextLogs = compactLogs(status.logs) || "等待启动...";
+  if (log.value !== nextLogs) {
+    log.value = nextLogs;
+    log.scrollTop = autoFollowLogs && wasAtBottom ? log.scrollHeight : previousScrollTop;
+  }
+
+  updateActionButton("toggle-autolog", autoFollowLogs ? "暂停跟随" : "继续跟随", !autoFollowLogs);
+  updateActionButton("clear-logs", "清空", false);
+}
+
+function updateActionButton(id: string, label: string, selected: boolean) {
+  const button = document.querySelector<HTMLButtonElement>(`#${id}`);
+  if (!button) return;
+  const busy = pendingAction === id;
+  button.textContent = busy ? "处理中..." : label;
+  button.disabled = busy;
+  button.classList.toggle("selected", selected);
 }
 
 function navButton(tab: Tab, label: string) {
@@ -260,34 +319,38 @@ function renderTab() {
 
 function renderOverviewTab() {
   return `
-    <section class="workspace">
-      <article class="panel">
-        <h2>运行模式</h2>
-        <div class="actions">
-          ${actionButton("start-host", "主电脑模式", status.mode === "host")}
-          ${actionButton("start-remote", "副电脑模式", status.mode === "remote")}
-          ${actionButton("stop", "停止", status.mode === "idle")}
-        </div>
-      </article>
-      <article class="panel">
-        <h2>当前状态</h2>
-        ${definitionList([
-          ["模式", modeLabel(status.mode)],
-          ["连接", status.connected ? "已连接" : "未连接"],
-          ["键盘目标", targetLabel(status.target)],
-          ["管理员权限", status.elevated ? "已开启" : "未开启"]
-        ])}
-        ${renderElevationHint()}
-      </article>
-      <article class="panel wide">
-        <h2>控制切换与安全释放</h2>
-        <p>鼠标在哪台电脑活动，键盘就自动跟到哪台电脑。鼠标仍由你现有的方式控制，本软件不会跨电脑转发或拦截鼠标。</p>
-        <div class="actions">
-          ${actionButton("release-control", "立即回到主电脑", status.target === "local")}
-          ${actionButton("target-local", "键盘到主电脑", status.target === "local")}
-          ${actionButton("target-remote", "键盘到副电脑", status.target === "remote")}
-        </div>
-      </article>
+    <section class="workspace overview-workspace">
+      <div class="panel-stack">
+        <article class="panel">
+          <h2>运行模式</h2>
+          <div class="actions">
+            ${actionButton("start-host", "主电脑模式", status.mode === "host")}
+            ${actionButton("start-remote", "副电脑模式", status.mode === "remote")}
+            ${actionButton("stop", "停止", status.mode === "idle")}
+          </div>
+        </article>
+        <article class="panel">
+          <h2>控制切换与安全释放</h2>
+          <p>鼠标在哪台电脑活动，键盘就自动跟到哪台电脑。鼠标仍由你现有的方式控制，本软件不会跨电脑转发或拦截鼠标。</p>
+          <div class="actions">
+            ${actionButton("release-control", "立即回到主电脑", status.target === "local")}
+            ${actionButton("target-local", "键盘到主电脑", status.target === "local")}
+            ${actionButton("target-remote", "键盘到副电脑", status.target === "remote")}
+          </div>
+        </article>
+      </div>
+      <div class="panel-stack">
+        <article class="panel">
+          <h2>当前状态</h2>
+          ${definitionList([
+            ["模式", modeLabel(status.mode)],
+            ["连接", status.connected ? "已连接" : "未连接"],
+            ["键盘目标", targetLabel(status.target)],
+            ["管理员权限", status.elevated ? "已开启" : "未开启"]
+          ])}
+          ${renderElevationHint()}
+        </article>
+      </div>
     </section>
   `;
 }
@@ -334,7 +397,7 @@ function renderNetworkTab() {
   const tcpAdvice = portProbeAdvice(info?.tcpReachable, info?.targetHost, "keyboard");
   const updateAdvice = portProbeAdvice(info?.updateReachable, info?.targetHost, "update");
   return `
-    <section class="workspace">
+    <section class="workspace network-workspace">
       <article class="panel wide">
         <h2>主电脑地址</h2>
         <div class="inline-form">
@@ -442,13 +505,25 @@ function renderLogs() {
 }
 
 function bindEvents() {
+  bindNavigationEvents();
+  bindTabEvents();
+  bindLogEvents();
+}
+
+function bindNavigationEvents() {
   document.querySelectorAll<HTMLButtonElement>("[data-tab]").forEach((button) => {
     button.addEventListener("click", () => {
       activeTab = button.dataset.tab as Tab;
-      if (activeTab === "network") refreshDiagnostics();
-      render();
+      document.querySelectorAll<HTMLButtonElement>("[data-tab]").forEach((nav) => {
+        nav.classList.toggle("active", nav.dataset.tab === activeTab);
+      });
+      updateTabView(true);
+      if (activeTab === "network") void refreshDiagnostics();
     });
   });
+}
+
+function bindTabEvents() {
   onClick("start-host", () => startMode("host"));
   onClick("start-remote", () => startMode("remote"));
   onClick("stop", stopMode);
@@ -472,12 +547,15 @@ function bindEvents() {
   onClick("mouse-balanced", () => setMouseSensitivity("balanced"));
   onClick("mouse-sensitive", () => setMouseSensitivity("sensitive"));
   onClick("refresh-diagnostics", refreshDiagnostics);
+}
+
+function bindLogEvents() {
   onClick("copy-logs", copyLogs);
   onClick("clear-logs", clearLogs);
   onClick("download-logs", downloadLogs);
   onClick("toggle-autolog", () => {
     autoFollowLogs = !autoFollowLogs;
-    render();
+    updateLogView();
   });
   document.querySelector("#log-text")?.addEventListener("scroll", (event) => {
     const log = event.currentTarget as HTMLTextAreaElement;

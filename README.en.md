@@ -2,7 +2,7 @@
 
 A small Windows utility that routes one ordinary keyboard between two Windows PCs.
 
-Devices Router forwards keyboard input but never forwards the mouse. `v0.1.32` makes activity-follow substantially faster: moving the mouse on a PC quickly moves the keyboard target to that PC.
+Devices Router forwards keyboard input but never forwards the mouse. `v0.1.33` keeps the desktop console fixed in place: periodic status refreshes no longer rebuild the whole page, and only the log viewer scrolls.
 
 Language / 璇█: [绠€浣撲腑鏂嘳(README.md) | **English**
 
@@ -10,7 +10,7 @@ Language / 璇█: [绠€浣撲腑鏂嘳(README.md) | **English**
 
 - Platform: Windows -> Windows
 - Main implementation: Tauri/Rust desktop app in `apps/desktop-tauri/`
-- Current version: `v0.1.32`
+- Current version: `v0.1.33`
 - For normal users: install the `.exe` setup package. Node.js, Rust, Python, and other development dependencies are not required.
 - Ports:
   - TCP `8765`: keyboard events, control messages, heartbeat
