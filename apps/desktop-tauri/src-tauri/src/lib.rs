@@ -8,6 +8,8 @@ mod keyboard_hook;
 mod mouse;
 mod mouse_hook;
 mod protocol;
+mod routing;
+mod sessions;
 mod startup;
 mod tray;
 mod updates;
