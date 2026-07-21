@@ -134,7 +134,14 @@ The current focus is stable English letters, numbers, common control keys, and b
 
 ## The second remote cannot connect
 
-- Confirm all three PCs run `v0.2.3`.
+- Confirm all three PCs run `v0.2.4`.
 - The host accepts two distinct remotes; a third receives an explicit two-device-limit rejection.
 - An old remote has no device ID and can only use the single legacy slot. Upgrade the host first, then each remote.
 - Disconnecting one remote must not affect the other. If the active remote disconnects, the keyboard immediately returns to the host.
+
+## Activity channel shows TCP compatible
+
+- This does not mean disconnected. Keyboard events and reliable control always remain on TCP `8765`.
+- Check that Windows Firewall on the host allows Devices Router to receive UDP `8766`.
+- A ready fast path shows `UDP fast`. If a switch is not confirmed, the remote retries once over TCP after 60ms and downgrades automatically.
+- For high LAN RTT, compare the immediate `Live RTT` spike with `Stable RTT`, `Jitter`, and `Loss (last 20)`. Wi-Fi loss usually raises the latter metrics together.

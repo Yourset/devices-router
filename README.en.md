@@ -10,11 +10,11 @@ Language / 璇█: [绠€浣撲腑鏂嘳(README.md) | **English**
 
 - Platform: Windows -> Windows
 - Main implementation: Tauri/Rust desktop app in `apps/desktop-tauri/`
-- Current version: `v0.2.3`
+- Current version: `v0.2.4`
 - For normal users: install the `.exe` setup package. Node.js, Rust, Python, and other development dependencies are not required.
 - Ports:
-  - TCP `8765`: keyboard events, control messages, heartbeat
-  - UDP `8766`: host discovery
+  - TCP `8765`: keyboard events, reliable control, heartbeat, and RTT probes with `TCP_NODELAY`
+  - UDP `8766`: host discovery and the mouse-activity fast path
   - TCP `8767`: LAN update server
 
 ## Features
@@ -23,6 +23,8 @@ Language / 璇█: [绠€浣撲腑鏂嘳(README.md) | **English**
 - Windows `SendInput` injection on the remote PC
 - Automatic discovery and reconnect
 - Mouse-activity based keyboard target switching
+- Automatic TCP fallback when the UDP activity fast path is unavailable
+- Host-authoritative live RTT, stable RTT, jitter, and loss over the latest 20 probes
 - Bidirectional heartbeat for connection state
 - LAN-based remote update from the host PC
 - Copy, export, and clear logs

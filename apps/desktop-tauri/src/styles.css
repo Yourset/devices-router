@@ -349,7 +349,7 @@ dd {
 .device-card {
   border: 1px solid #d7deea;
   border-radius: 7px;
-  padding: 9px 10px;
+  padding: 7px 8px;
   background: #f8fafc;
   min-width: 0;
 }
@@ -381,20 +381,46 @@ dd {
   margin: 0 0 6px;
 }
 
+.link-stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px 8px;
+  margin: 3px 0 4px;
+}
+
+.link-stats p {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  margin: 0;
+  color: #5a6678;
+  font-size: 11px;
+  min-width: 0;
+}
+
+.link-stats p:first-child {
+  grid-column: 1 / -1;
+}
+
+.link-stats strong {
+  color: #172033;
+  white-space: nowrap;
+}
+
 .device-alias-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 6px;
-  margin-bottom: 6px;
+  margin-bottom: 3px;
 }
 
 .device-alias-row input {
   min-width: 0;
   width: 100%;
-  padding: 6px 8px;
+  padding: 4px 6px;
 }
 
 .device-card button {
-  padding: 5px 8px;
+  padding: 4px 6px;
   font-size: 12px;
 }

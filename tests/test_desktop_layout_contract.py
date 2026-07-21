@@ -59,11 +59,11 @@ def test_desktop_release_version_is_consistent():
     cargo = (DESKTOP / "src-tauri" / "Cargo.toml").read_text(encoding="utf-8")
     cargo_lock = (DESKTOP / "src-tauri" / "Cargo.lock").read_text(encoding="utf-8")
 
-    assert package["version"] == "0.2.3"
-    assert tauri["version"] == "0.2.3"
-    assert re.search(r'^version = "0\.2\.3"$', cargo, re.MULTILINE)
+    assert package["version"] == "0.2.4"
+    assert tauri["version"] == "0.2.4"
+    assert re.search(r'^version = "0\.2\.4"$', cargo, re.MULTILINE)
     assert re.search(
-        r'name = "devices-router"\s+version = "0\.2\.3"',
+        r'name = "devices-router"\s+version = "0\.2\.4"',
         cargo_lock,
         re.MULTILINE,
     )
@@ -112,9 +112,19 @@ def test_overview_displays_host_and_per_device_latency_without_new_scrollers():
 
     assert "latencyMs: number | null;" in source
     assert "hostLatencyMs: number | null;" in source
-    assert '主机延迟' in source
-    assert '延迟：${latencyLabel(device.latencyMs, device.connected)}' in source
-    assert 'return "测量中"' in source
+    assert "linkStats: LinkStats | null;" in source
+    assert "activityTransport: string;" in source
+    assert '"活动通道"' in source
+    assert '"实时 RTT"' in source
+    assert '"稳定 RTT"' in source
+    assert '"抖动"' in source
+    assert '"近 20 次丢包"' in source
+    assert '"UDP 快速"' in source
+    assert '"TCP 兼容"' in source
+    assert '"测量中"' in source
+    assert "data-live-key" in source
+    assert "sameStructureIgnoringLiveFields" in source
+    assert "patchLiveFields(current, next);" in source
     assert "overflow: auto" not in re.sub(
         r"\.log-panel textarea\s*\{[^{}]*\}", "", css, flags=re.DOTALL
     )

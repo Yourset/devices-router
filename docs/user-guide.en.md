@@ -106,7 +106,7 @@ UAC prompts, elevated windows, some games, or protected windows may reject simul
 
 ## Three-PC Setup
 
-1. Install v0.2.3 on the host and start Host mode.
+1. Install v0.2.4 on the host and start Host mode.
 2. Install the same package on both remote PCs and start Remote mode on each.
 3. When both remotes appear on the host overview, optionally assign aliases.
 4. Mouse activity on any PC selects that PC after the 30 ms debounce window.
@@ -114,3 +114,11 @@ UAC prompts, elevated windows, some games, or protected windows may reject simul
 6. Ctrl+Alt+Esc always releases the keyboard back to the host.
 
 Devices Router never transports, locks, or suppresses mouse input.
+
+## v0.2.4 Link Status
+
+- `Activity channel` shows `UDP fast` when mouse activity uses UDP `8766`; it automatically changes to `TCP compatible` when UDP is unavailable.
+- `Live RTT` is the latest control-link round trip, while `Stable RTT` is the median of the latest 20 probes.
+- `Jitter` is the median change between adjacent samples, and `Loss (last 20)` counts probe timeouts.
+- Only the host initiates RTT probes between v0.2.4 peers. The remote displays the same host-authoritative statistics sent over TCP.
+- Upgrade the host first. A v0.2.3 remote remains compatible over TCP and can auto-update from the host to v0.2.4.

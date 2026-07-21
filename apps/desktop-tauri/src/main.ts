@@ -8,6 +8,14 @@ type Theme = "light" | "soft";
 type MouseSensitivity = "stable" | "balanced" | "sensitive";
 type StartupMode = "last" | "host" | "remote" | "idle";
 
+type LinkStats = {
+  currentRttMs: number | null;
+  medianRttMs: number | null;
+  jitterMs: number | null;
+  lossPercent: number;
+  sampleCount: number;
+};
+
 type DeviceStatus = {
   deviceId: string;
   name: string;
@@ -16,6 +24,8 @@ type DeviceStatus = {
   legacy: boolean;
   lastActivityAgoMs: number | null;
   latencyMs: number | null;
+  linkStats: LinkStats | null;
+  activityTransport: string;
 };
 
 type AppStatus = {
@@ -28,6 +38,8 @@ type AppStatus = {
   activeDeviceId: string | null;
   devices: DeviceStatus[];
   hostLatencyMs: number | null;
+  linkStats: LinkStats | null;
+  activityTransport: string;
   elevated: boolean;
   logs: string[];
   config: {
@@ -86,7 +98,7 @@ let pendingAction: string | null = null;
 let diagnostics: NetworkDiagnostics | null = null;
 
 let status: AppStatus = {
-  version: "0.2.3",
+  version: "0.2.4",
   mode: "idle",
   running: false,
   connected: false,
@@ -95,6 +107,8 @@ let status: AppStatus = {
   activeDeviceId: null,
   devices: [],
   hostLatencyMs: null,
+  linkStats: null,
+  activityTransport: "tcp",
   elevated: false,
   logs: [],
   config: {
@@ -305,8 +319,36 @@ function updateTabView(force = false) {
   const next = template.content.firstElementChild as HTMLElement | null;
   if (!next || (!force && current.outerHTML === next.outerHTML)) return;
 
+  if (!force && sameStructureIgnoringLiveFields(current, next)) {
+    patchLiveFields(current, next);
+    return;
+  }
+
   current.replaceWith(next);
   bindTabEvents();
+}
+
+function sameStructureIgnoringLiveFields(current: HTMLElement, next: HTMLElement) {
+  const currentClone = current.cloneNode(true) as HTMLElement;
+  const nextClone = next.cloneNode(true) as HTMLElement;
+  currentClone.querySelectorAll<HTMLElement>("[data-live-key]").forEach((node) => {
+    node.textContent = "";
+  });
+  nextClone.querySelectorAll<HTMLElement>("[data-live-key]").forEach((node) => {
+    node.textContent = "";
+  });
+  return currentClone.outerHTML === nextClone.outerHTML;
+}
+
+function patchLiveFields(current: HTMLElement, next: HTMLElement) {
+  next.querySelectorAll<HTMLElement>("[data-live-key]").forEach((nextNode) => {
+    const key = nextNode.dataset.liveKey;
+    if (!key) return;
+    const currentNode = current.querySelector<HTMLElement>(`[data-live-key="${key}"]`);
+    if (currentNode && currentNode.textContent !== nextNode.textContent) {
+      currentNode.textContent = nextNode.textContent;
+    }
+  });
 }
 
 function updateLogView() {
@@ -366,11 +408,9 @@ function renderOverviewTab() {
             ["键盘目标", targetLabel(status.target)],
             ["管理员权限", status.elevated ? "已开启" : "未开启"]
           ])}
-          ${status.mode === "remote" ? `<p class="latency-line">主机延迟：${latencyLabel(status.hostLatencyMs, status.connected)}</p>` : ""}
+          ${status.mode === "remote" ? renderLinkStats("host", status.linkStats, status.connected, status.hostLatencyMs, status.activityTransport) : ""}
           ${renderElevationHint()}
         </article>
-      </div>
-      <div class="panel-stack">
         <article class="panel">
           <h2>控制切换与安全释放</h2>
           <p>鼠标在哪台电脑活动，键盘就跟到哪台。鼠标仍由 Logi 处理，Devices Router 不转发鼠标。</p>
@@ -379,6 +419,8 @@ function renderOverviewTab() {
             ${actionButton("target-local", "键盘到主电脑", status.target === "local")}
           </div>
         </article>
+      </div>
+      <div class="panel-stack">
         <article class="panel device-panel">
           <h2>设备与键盘目标</h2>
           ${renderRemoteDevices()}
@@ -397,7 +439,6 @@ function renderRemoteDevices() {
 function renderLocalDevice() {
   return `<div class="device-card ${status.target === "local" ? "active" : ""}" data-device-id="local">
     <div class="device-card-title"><strong>${escapeHtml(status.localDeviceName || "主电脑")}</strong><span>本机</span></div>
-    <p>鼠标在本机活动时，键盘自动回到这里。</p>
     ${actionButton("target-local-device", "切到本机", status.target === "local")}
   </div>`;
 }
@@ -407,7 +448,7 @@ function renderRemoteDevice(device: DeviceStatus, index: number) {
   return `<div class="device-card ${active ? "active" : ""}" data-device-id="${escapeHtml(device.deviceId)}">
     <div class="device-card-title"><strong>${escapeHtml(device.name)}</strong><span>${device.connected ? "在线" : "离线"}</span></div>
     <p>${escapeHtml(device.address)}${device.legacy ? " � Legacy" : ""}</p>
-    <p>延迟：${latencyLabel(device.latencyMs, device.connected)}</p>
+    ${renderLinkStats(`device-${index}`, device.linkStats, device.connected, device.latencyMs, device.activityTransport)}
     <div class="device-alias-row">
       <input id="device-alias-${index}" value="${escapeHtml(device.name)}" placeholder="设备别名" />
       ${actionButton(`save-device-${index}`, "保存", false)}
@@ -667,6 +708,41 @@ function latencyLabel(latencyMs: number | null, connected: boolean) {
   if (!connected) return "—";
   if (latencyMs === null) return "测量中";
   return `${latencyMs} ms`;
+}
+
+function renderLinkStats(
+  keyPrefix: string,
+  linkStats: LinkStats | null,
+  connected: boolean,
+  legacyLatencyMs: number | null,
+  activityTransport: string
+) {
+  const current = connected
+    ? linkStats?.currentRttMs === null || linkStats?.currentRttMs === undefined
+      ? "测量中"
+      : `${linkStats.currentRttMs} ms`
+    : "—";
+  const stable = latencyLabel(linkStats?.medianRttMs ?? legacyLatencyMs, connected);
+  const jitter = connected && linkStats?.jitterMs !== null && linkStats?.jitterMs !== undefined
+    ? `${linkStats.jitterMs} ms`
+    : "—";
+  const loss = connected && linkStats
+    ? `${linkStats.lossPercent}%`
+    : "—";
+  const transport = connected
+    ? activityTransport === "udp" ? "UDP 快速" : "TCP 兼容"
+    : "—";
+  return `<div class="link-stats">
+    ${liveMetric(`${keyPrefix}-transport`, "活动通道", transport)}
+    ${liveMetric(`${keyPrefix}-current`, "实时 RTT", current)}
+    ${liveMetric(`${keyPrefix}-median`, "稳定 RTT", stable)}
+    ${liveMetric(`${keyPrefix}-jitter`, "抖动", jitter)}
+    ${liveMetric(`${keyPrefix}-loss`, "近 20 次丢包", loss)}
+  </div>`;
+}
+
+function liveMetric(key: string, label: string, value: string) {
+  return `<p><span>${label}：</span><strong data-live-key="${key}">${value}</strong></p>`;
 }
 
 function modeLabel(mode: AppMode) {
