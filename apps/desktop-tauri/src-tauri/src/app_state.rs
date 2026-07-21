@@ -1,9 +1,8 @@
 use crate::config::AppConfig;
+use crate::latency::LinkStats;
 use crate::protocol::BridgeEvent;
 pub use crate::routing::KeyboardTarget;
-use crate::sessions::{
-    smooth_latency, DeviceStatus, RegisterResult, SessionIdentity, SessionRegistry,
-};
+use crate::sessions::{DeviceStatus, RegisterResult, SessionIdentity, SessionRegistry};
 use serde::Serialize;
 use std::collections::VecDeque;
 use std::sync::mpsc;
@@ -58,6 +57,8 @@ pub struct AppStatus {
     pub active_device_id: Option<String>,
     pub devices: Vec<DeviceStatus>,
     pub host_latency_ms: Option<u64>,
+    pub link_stats: Option<LinkStats>,
+    pub activity_transport: String,
     pub elevated: bool,
     pub logs: Vec<String>,
     pub config: AppConfig,
@@ -89,7 +90,8 @@ struct InnerState {
     local_release_generation: u64,
     sessions: SessionRegistry,
     emergency_release_generation: u64,
-    host_latency_ms: Option<u64>,
+    host_link_stats: Option<LinkStats>,
+    activity_transport: String,
 }
 
 impl SharedState {
@@ -110,7 +112,8 @@ impl SharedState {
                     local_release_generation: 0,
                     sessions: SessionRegistry::default(),
                     emergency_release_generation: 0,
-                    host_latency_ms: None,
+                    host_link_stats: None,
+                    activity_transport: "tcp".to_string(),
                 }),
                 stop: AtomicBool::new(false),
                 run_generation: AtomicU64::new(0),
@@ -133,7 +136,8 @@ impl SharedState {
         inner.remote_sender = None;
         inner.remote_sender_generation = inner.remote_sender_generation.wrapping_add(1);
         inner.sessions.clear();
-        inner.host_latency_ms = None;
+        inner.host_link_stats = None;
+        inner.activity_transport = "tcp".to_string();
         inner.config.last_mode = AppMode::Idle.as_str().to_string();
         inner.config.save();
         push_log(&mut inner.logs, "[应用] 已停止\n".to_string());
@@ -152,7 +156,12 @@ impl SharedState {
             local_device_name: crate::config::computer_name(),
             active_device_id,
             devices,
-            host_latency_ms: inner.host_latency_ms,
+            host_latency_ms: inner
+                .host_link_stats
+                .as_ref()
+                .and_then(|stats| stats.median_rtt_ms),
+            link_stats: inner.host_link_stats.clone(),
+            activity_transport: inner.activity_transport.clone(),
             elevated: crate::elevation::is_elevated(),
             logs: inner.logs.iter().cloned().collect(),
             config: inner.config.clone(),
@@ -195,7 +204,8 @@ impl AppRuntime {
         inner.config.last_mode = mode.as_str().to_string();
         inner.config.save();
         inner.sessions.clear();
-        inner.host_latency_ms = None;
+        inner.host_link_stats = None;
+        inner.activity_transport = "tcp".to_string();
         push_log(
             &mut inner.logs,
             format!("[应用] 已启动{}模式\n", mode.label()),
@@ -222,20 +232,31 @@ impl AppRuntime {
         let mut inner = self.state.lock().expect("state lock poisoned");
         inner.connected = connected;
         if !connected {
-            inner.host_latency_ms = None;
+            inner.host_link_stats = None;
+            inner.activity_transport = "tcp".to_string();
         }
     }
 
-    pub fn record_host_latency(&self, sample_ms: u64) {
+    pub fn record_host_link_stats(&self, link_stats: LinkStats) {
         let mut inner = self.state.lock().expect("state lock poisoned");
-        inner.host_latency_ms = Some(smooth_latency(inner.host_latency_ms, sample_ms));
+        inner.host_link_stats = Some(link_stats);
     }
 
-    pub fn record_session_latency(&self, device_id: &str, generation: u64, sample_ms: u64) -> bool {
+    pub fn record_session_link_stats(
+        &self,
+        device_id: &str,
+        generation: u64,
+        link_stats: LinkStats,
+    ) -> bool {
         let mut inner = self.state.lock().expect("state lock poisoned");
         inner
             .sessions
-            .record_latency(device_id, generation, sample_ms)
+            .record_link_stats(device_id, generation, link_stats)
+    }
+
+    pub fn set_activity_transport(&self, udp_active: bool) {
+        let mut inner = self.state.lock().expect("state lock poisoned");
+        inner.activity_transport = if udp_active { "udp" } else { "tcp" }.to_string();
     }
 
     pub fn set_target(&self, target: KeyboardTarget) {
@@ -346,6 +367,13 @@ impl AppRuntime {
         inner
             .sessions
             .validate_tcp_activity(device_id, generation, activity_id)
+    }
+
+    pub fn mark_session_tcp_activity_transport(&self, device_id: &str, generation: u64) -> bool {
+        let mut inner = self.state.lock().expect("state lock poisoned");
+        inner
+            .sessions
+            .mark_tcp_activity_transport(device_id, generation)
     }
 
     pub fn remove_session(&self, device_id: &str, generation: u64) -> bool {
@@ -552,17 +580,28 @@ mod tests {
     }
 
     #[test]
-    fn remote_host_latency_is_smoothed_and_cleared_with_connection() {
+    fn remote_host_link_stats_are_mapped_to_legacy_latency_and_cleared() {
         let state = SharedState::new("test");
         let runtime = state.runtime();
 
         runtime.set_connected(true);
-        runtime.record_host_latency(8);
-        runtime.record_host_latency(12);
+        let stats = LinkStats {
+            current_rtt_ms: Some(12),
+            median_rtt_ms: Some(9),
+            jitter_ms: Some(4),
+            loss_percent: 5,
+            sample_count: 20,
+        };
+        runtime.record_host_link_stats(stats.clone());
+        runtime.set_activity_transport(true);
         assert_eq!(state.snapshot().host_latency_ms, Some(9));
+        assert_eq!(state.snapshot().link_stats, Some(stats));
+        assert_eq!(state.snapshot().activity_transport, "udp");
 
         runtime.set_connected(false);
         assert_eq!(state.snapshot().host_latency_ms, None);
+        assert_eq!(state.snapshot().link_stats, None);
+        assert_eq!(state.snapshot().activity_transport, "tcp");
     }
 
     #[test]

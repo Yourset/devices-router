@@ -7,7 +7,7 @@ use crate::input::release_local_modifiers;
 use crate::keyboard_hook::{
     run_keyboard_hook, set_key_suppression, take_panic_request, RawKeyEvent,
 };
-use crate::latency::LatencyProbeTracker;
+use crate::latency::{LatencyProbeTracker, LinkStats, HOST_LATENCY_CAPABILITY};
 use crate::mouse::cursor_position;
 use crate::mouse_hook::set_mouse_input_suppression;
 use crate::protocol::{
@@ -291,6 +291,9 @@ fn handle_host_connection(
     let supports_udp_activity = capabilities
         .iter()
         .any(|value| value == UDP_ACTIVITY_CAPABILITY);
+    let supports_host_latency = capabilities
+        .iter()
+        .any(|value| value == HOST_LATENCY_CAPABILITY);
     let registration = if supports_udp_activity {
         runtime.register_session_with_activity_support(
             SessionIdentity {
@@ -329,16 +332,18 @@ fn handle_host_connection(
         }
     };
     let handshake_response = if supports_server_hello {
-        let activity_capabilities = if supports_udp_activity {
-            vec![UDP_ACTIVITY_CAPABILITY.to_string()]
-        } else {
-            Vec::new()
-        };
+        let mut negotiated_capabilities = Vec::new();
+        if supports_udp_activity {
+            negotiated_capabilities.push(UDP_ACTIVITY_CAPABILITY.to_string());
+        }
+        if supports_host_latency {
+            negotiated_capabilities.push(HOST_LATENCY_CAPABILITY.to_string());
+        }
         BridgeEvent::ServerHello {
             accepted: true,
             reason: None,
             max_devices: MAX_REMOTE_DEVICES as u8,
-            capabilities: activity_capabilities,
+            capabilities: negotiated_capabilities,
             activity_token: acceptance.activity_token.clone(),
             activity_port: supports_udp_activity.then_some(ACTIVITY_PORT),
         }
@@ -366,6 +371,7 @@ fn handle_host_connection(
     let mut writer = stream.try_clone().context("clone host writer stream")?;
     let writer_events = event_tx.clone();
     let writer_device_id = device_id.clone();
+    let writer_runtime = Arc::clone(&runtime);
     let latency_tracker = Arc::new(Mutex::new(LatencyProbeTracker::default()));
     let writer_latency_tracker = Arc::clone(&latency_tracker);
     thread::Builder::new()
@@ -385,10 +391,18 @@ fn handle_host_connection(
                             Some(BackgroundSendDue::Probe)
                         ) {
                             let probe_sent_at = Instant::now();
-                            let probe_id = writer_latency_tracker
-                                .lock()
-                                .expect("latency tracker lock poisoned")
-                                .start_probe(probe_sent_at);
+                            let (probe_id, stats_update) = start_host_latency_probe(
+                                &writer_latency_tracker,
+                                &writer_runtime,
+                                &writer_device_id,
+                                generation,
+                                probe_sent_at,
+                            );
+                            if supports_host_latency {
+                                if let Some(stats) = stats_update {
+                                    writer.write_all(&encode_event(&link_stats_event(&stats))?)?;
+                                }
+                            }
                             let probe = BridgeEvent::Ping {
                                 message: "latency-probe".to_string(),
                                 probe_id: Some(probe_id),
@@ -416,20 +430,35 @@ fn handle_host_connection(
                             }
                             Some(BackgroundSendDue::Probe) => {
                                 let now = Instant::now();
-                                let probe_id = writer_latency_tracker
-                                    .lock()
-                                    .expect("latency tracker lock poisoned")
-                                    .start_probe(now);
+                                let (probe_id, stats_update) = start_host_latency_probe(
+                                    &writer_latency_tracker,
+                                    &writer_runtime,
+                                    &writer_device_id,
+                                    generation,
+                                    now,
+                                );
+                                let stats_result = if supports_host_latency {
+                                    stats_update.map_or(Ok(()), |stats| {
+                                        encode_event(&link_stats_event(&stats)).and_then(|bytes| {
+                                            writer.write_all(&bytes)?;
+                                            Ok(())
+                                        })
+                                    })
+                                } else {
+                                    Ok(())
+                                };
                                 let probe = BridgeEvent::Ping {
                                     message: "latency-probe".to_string(),
                                     probe_id: Some(probe_id),
                                     reply_to: None,
                                 };
-                                encode_event(&probe).and_then(|bytes| {
-                                    writer.write_all(&bytes)?;
-                                    last_outbound = now;
-                                    last_probe = now;
-                                    Ok(())
+                                stats_result.and_then(|_| {
+                                    encode_event(&probe).and_then(|bytes| {
+                                        writer.write_all(&bytes)?;
+                                        last_outbound = now;
+                                        last_probe = now;
+                                        Ok(())
+                                    })
                                 })
                             }
                             None => Ok(()),
@@ -494,12 +523,23 @@ fn handle_host_connection(
                         });
                     }
                     if let Some(reply_to) = reply_to {
-                        let sample_ms = latency_tracker
-                            .lock()
-                            .expect("latency tracker lock poisoned")
-                            .complete_probe(reply_to, Instant::now());
-                        if let Some(sample_ms) = sample_ms {
-                            runtime.record_session_latency(&device_id, generation, sample_ms);
+                        let stats = {
+                            let mut tracker = latency_tracker
+                                .lock()
+                                .expect("latency tracker lock poisoned");
+                            tracker
+                                .complete_probe(reply_to, Instant::now())
+                                .map(|_| tracker.stats())
+                        };
+                        if let Some(stats) = stats {
+                            if runtime.record_session_link_stats(
+                                &device_id,
+                                generation,
+                                stats.clone(),
+                            ) && supports_host_latency
+                            {
+                                let _ = outbound_tx.send(link_stats_event(&stats));
+                            }
                         }
                     }
                 }
@@ -526,6 +566,35 @@ fn handle_host_connection(
         reason: "connection closed".to_string(),
     });
     Ok(())
+}
+
+fn start_host_latency_probe(
+    tracker: &Arc<Mutex<LatencyProbeTracker>>,
+    runtime: &Arc<AppRuntime>,
+    device_id: &str,
+    generation: u64,
+    now: Instant,
+) -> (u64, Option<LinkStats>) {
+    let (probe_id, stats) = {
+        let mut tracker = tracker.lock().expect("latency tracker lock poisoned");
+        let probe_id = tracker.start_probe(now);
+        (probe_id, tracker.stats())
+    };
+    let stats_update = (stats != LinkStats::default()).then_some(stats);
+    if let Some(stats) = &stats_update {
+        runtime.record_session_link_stats(device_id, generation, stats.clone());
+    }
+    (probe_id, stats_update)
+}
+
+fn link_stats_event(stats: &LinkStats) -> BridgeEvent {
+    BridgeEvent::LinkStatsState {
+        current_rtt_ms: stats.current_rtt_ms,
+        median_rtt_ms: stats.median_rtt_ms,
+        jitter_ms: stats.jitter_ms,
+        loss_percent: Some(u64::from(stats.loss_percent)),
+        sample_count: u8::try_from(stats.sample_count).unwrap_or(u8::MAX),
+    }
 }
 
 fn handle_host_event(
@@ -738,6 +807,7 @@ fn handle_tcp_mouse_activity(
         if !runtime.validate_tcp_activity(device_id, generation, activity_id) {
             return false;
         }
+        runtime.mark_session_tcp_activity_transport(device_id, generation);
     }
     event_tx
         .send(HostEvent::RemoteActivity {
@@ -816,6 +886,7 @@ mod tests {
                         "multi_remote_v1".to_string(),
                         "server_hello_v1".to_string(),
                         "udp_activity_v1".to_string(),
+                        "host_latency_v2".to_string(),
                     ],
                 })
                 .unwrap(),
@@ -947,7 +1018,29 @@ mod tests {
         while state.snapshot().devices[0].latency_ms.is_none() && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(5));
         }
-        assert!(state.snapshot().devices[0].latency_ms.is_some());
+        let device = &state.snapshot().devices[0];
+        assert!(device.latency_ms.is_some());
+        assert!(device.link_stats.is_some());
+
+        line.clear();
+        let mut received_stats = false;
+        for _ in 0..4 {
+            if reader.read_line(&mut line).unwrap() == 0 {
+                break;
+            }
+            if matches!(
+                decode_event(line.as_bytes()).unwrap(),
+                BridgeEvent::LinkStatsState { .. }
+            ) {
+                received_stats = true;
+                break;
+            }
+            line.clear();
+        }
+        assert!(
+            received_stats,
+            "host did not sync link statistics to remote"
+        );
 
         drop(reader);
         drop(stream);
@@ -1042,7 +1135,10 @@ mod tests {
                 activity_token: Some(_),
                 activity_port: Some(8766),
                 ..
-            } if capabilities == vec![UDP_ACTIVITY_CAPABILITY.to_string()]
+            } if capabilities == vec![
+                UDP_ACTIVITY_CAPABILITY.to_string(),
+                HOST_LATENCY_CAPABILITY.to_string(),
+            ]
         ));
 
         drop(stream);
@@ -1148,6 +1244,15 @@ mod tests {
             .accepted()
             .unwrap();
         let (host_event_tx, host_event_rx) = mpsc::channel();
+        assert_eq!(
+            runtime.validate_session_activity_hello(
+                &accepted.device_id,
+                accepted.activity_token.as_deref().unwrap(),
+                "10.0.0.1",
+            ),
+            Some(accepted.generation)
+        );
+        assert_eq!(state.snapshot().devices[0].activity_transport, "udp");
 
         assert!(handle_tcp_mouse_activity(
             &runtime,
@@ -1162,6 +1267,7 @@ mod tests {
             HostEvent::RemoteActivity { device_id, generation }
                 if device_id == "device-a" && generation == accepted.generation
         ));
+        assert_eq!(state.snapshot().devices[0].activity_transport, "tcp");
         assert!(!handle_tcp_mouse_activity(
             &runtime,
             &host_event_tx,

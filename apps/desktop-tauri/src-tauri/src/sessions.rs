@@ -1,3 +1,4 @@
+use crate::latency::LinkStats;
 use crate::protocol::BridgeEvent;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -62,6 +63,8 @@ pub struct DeviceStatus {
     pub legacy: bool,
     pub last_activity_ago_ms: Option<u64>,
     pub latency_ms: Option<u64>,
+    pub link_stats: Option<LinkStats>,
+    pub activity_transport: String,
 }
 
 #[derive(Clone, Debug)]
@@ -76,7 +79,7 @@ struct SessionRecord {
     last_activity_id: Option<u64>,
     sender: mpsc::Sender<BridgeEvent>,
     last_activity: Option<Instant>,
-    latency_ms: Option<u64>,
+    link_stats: Option<LinkStats>,
 }
 
 #[derive(Debug, Default)]
@@ -137,7 +140,7 @@ impl SessionRegistry {
                 last_activity_id: None,
                 sender,
                 last_activity: None,
-                latency_ms: None,
+                link_stats: None,
             },
         );
         RegisterResult::Accepted(RegisterAcceptance {
@@ -254,14 +257,30 @@ impl SessionRegistry {
         session.accepts_activity_id(activity_id)
     }
 
-    pub fn record_latency(&mut self, device_id: &str, generation: u64, sample_ms: u64) -> bool {
+    pub fn mark_tcp_activity_transport(&mut self, device_id: &str, generation: u64) -> bool {
         let Some(session) = self.sessions.get_mut(device_id) else {
             return false;
         };
         if session.generation != generation {
             return false;
         }
-        session.latency_ms = Some(smooth_latency(session.latency_ms, sample_ms));
+        session.udp_ready = false;
+        true
+    }
+
+    pub fn record_link_stats(
+        &mut self,
+        device_id: &str,
+        generation: u64,
+        link_stats: LinkStats,
+    ) -> bool {
+        let Some(session) = self.sessions.get_mut(device_id) else {
+            return false;
+        };
+        if session.generation != generation {
+            return false;
+        }
+        session.link_stats = Some(link_stats);
         true
     }
 
@@ -283,18 +302,21 @@ impl SessionRegistry {
                 last_activity_ago_ms: session
                     .last_activity
                     .map(|last| now.saturating_duration_since(last).as_millis() as u64),
-                latency_ms: session.latency_ms,
+                latency_ms: session
+                    .link_stats
+                    .as_ref()
+                    .and_then(|stats| stats.median_rtt_ms),
+                link_stats: session.link_stats.clone(),
+                activity_transport: if session.udp_ready {
+                    "udp".to_string()
+                } else {
+                    "tcp".to_string()
+                },
             })
             .collect::<Vec<_>>();
         devices.sort_by(|left, right| left.device_id.cmp(&right.device_id));
         devices
     }
-}
-
-pub(crate) fn smooth_latency(previous_ms: Option<u64>, sample_ms: u64) -> u64 {
-    previous_ms.map_or(sample_ms, |previous| {
-        previous.saturating_mul(3).saturating_add(sample_ms) / 4
-    })
 }
 
 impl SessionRecord {
@@ -434,7 +456,7 @@ mod tests {
     }
 
     #[test]
-    fn latency_is_smoothed_per_device_and_stale_generation_is_ignored() {
+    fn link_stats_are_kept_per_device_and_stale_generation_is_ignored() {
         let mut registry = SessionRegistry::default();
         let (tx, _) = mpsc::channel::<BridgeEvent>();
         let first = registry
@@ -446,14 +468,33 @@ mod tests {
             .accepted()
             .unwrap();
 
-        assert!(registry.record_latency("a", first.generation, 8));
-        assert!(registry.record_latency("a", first.generation, 12));
-        assert!(registry.record_latency("b", second.generation, 30));
-        assert!(!registry.record_latency("a", first.generation.wrapping_add(1), 99));
+        let stats_a = LinkStats {
+            current_rtt_ms: Some(12),
+            median_rtt_ms: Some(9),
+            jitter_ms: Some(4),
+            loss_percent: 5,
+            sample_count: 20,
+        };
+        let stats_b = LinkStats {
+            current_rtt_ms: Some(30),
+            median_rtt_ms: Some(30),
+            jitter_ms: Some(0),
+            loss_percent: 0,
+            sample_count: 1,
+        };
+        assert!(registry.record_link_stats("a", first.generation, stats_a.clone()));
+        assert!(registry.record_link_stats("b", second.generation, stats_b.clone()));
+        assert!(!registry.record_link_stats(
+            "a",
+            first.generation.wrapping_add(1),
+            LinkStats::default()
+        ));
 
         let devices = registry.snapshots(&BTreeMap::new());
         assert_eq!(devices[0].latency_ms, Some(9));
         assert_eq!(devices[1].latency_ms, Some(30));
+        assert_eq!(devices[0].link_stats, Some(stats_a));
+        assert_eq!(devices[1].link_stats, Some(stats_b));
     }
 
     #[test]
@@ -464,11 +505,22 @@ mod tests {
             .register(identity(Some("a"), "Windows-A", "10.0.0.1"), tx.clone())
             .accepted()
             .unwrap();
-        assert!(registry.record_latency("a", first.generation, 8));
+        assert!(registry.record_link_stats(
+            "a",
+            first.generation,
+            LinkStats {
+                current_rtt_ms: Some(8),
+                median_rtt_ms: Some(8),
+                jitter_ms: Some(0),
+                loss_percent: 0,
+                sample_count: 1,
+            }
+        ));
 
         registry.register(identity(Some("a"), "Windows-A", "10.0.0.1"), tx);
 
         assert_eq!(registry.snapshots(&BTreeMap::new())[0].latency_ms, None);
+        assert_eq!(registry.snapshots(&BTreeMap::new())[0].link_stats, None);
     }
 
     #[test]
@@ -546,10 +598,18 @@ mod tests {
             .unwrap();
         let token = accepted.activity_token.as_deref().unwrap();
 
+        assert_eq!(
+            registry.snapshots(&BTreeMap::new())[0].activity_transport,
+            "tcp"
+        );
         assert_eq!(registry.validate_activity("a", token, "10.0.0.1", 1), None);
         assert_eq!(
             registry.validate_activity_hello("a", token, "10.0.0.1"),
             Some(accepted.generation)
+        );
+        assert_eq!(
+            registry.snapshots(&BTreeMap::new())[0].activity_transport,
+            "udp"
         );
         assert_eq!(
             registry.validate_activity_hello("a", token, "10.0.0.2"),
@@ -573,6 +633,11 @@ mod tests {
         assert_eq!(
             registry.validate_activity("a", token, "10.0.0.1", 2),
             Some(accepted.generation)
+        );
+        assert!(registry.mark_tcp_activity_transport("a", accepted.generation));
+        assert_eq!(
+            registry.snapshots(&BTreeMap::new())[0].activity_transport,
+            "tcp"
         );
     }
 

@@ -28,6 +28,21 @@ pub(crate) fn background_send_due(
     }
 }
 
+pub(crate) fn background_send_due_for_mode(
+    last_outbound: Instant,
+    last_probe: Instant,
+    now: Instant,
+    probe_enabled: bool,
+) -> Option<BackgroundSendDue> {
+    if probe_enabled {
+        background_send_due(last_outbound, last_probe, now)
+    } else if now.saturating_duration_since(last_outbound) >= CONTROL_HEARTBEAT_INTERVAL {
+        Some(BackgroundSendDue::Heartbeat)
+    } else {
+        None
+    }
+}
+
 pub(crate) fn background_send_after_outbound(
     last_outbound: Instant,
     last_probe: Instant,
@@ -36,6 +51,19 @@ pub(crate) fn background_send_after_outbound(
     match background_send_due(last_outbound, last_probe, now) {
         Some(BackgroundSendDue::Probe) => Some(BackgroundSendDue::Probe),
         _ => None,
+    }
+}
+
+pub(crate) fn background_send_after_outbound_for_mode(
+    last_outbound: Instant,
+    last_probe: Instant,
+    now: Instant,
+    probe_enabled: bool,
+) -> Option<BackgroundSendDue> {
+    if probe_enabled {
+        background_send_after_outbound(last_outbound, last_probe, now)
+    } else {
+        None
     }
 }
 
@@ -49,6 +77,19 @@ pub(crate) fn background_send_wait(
     let probe_wait =
         CONTROL_PROBE_INTERVAL.saturating_sub(now.saturating_duration_since(last_probe));
     heartbeat_wait.min(probe_wait)
+}
+
+pub(crate) fn background_send_wait_for_mode(
+    last_outbound: Instant,
+    last_probe: Instant,
+    now: Instant,
+    probe_enabled: bool,
+) -> Duration {
+    if probe_enabled {
+        background_send_wait(last_outbound, last_probe, now)
+    } else {
+        CONTROL_HEARTBEAT_INTERVAL.saturating_sub(now.saturating_duration_since(last_outbound))
+    }
 }
 
 #[cfg(test)]
@@ -119,5 +160,24 @@ mod tests {
                 assert_eq!(due, Some(BackgroundSendDue::Probe));
             }
         }
+    }
+
+    #[test]
+    fn host_authoritative_mode_never_schedules_a_remote_probe() {
+        let now = Instant::now();
+        let old = now - Duration::from_secs(2);
+
+        assert_eq!(
+            background_send_due_for_mode(old, old, now, false),
+            Some(BackgroundSendDue::Heartbeat)
+        );
+        assert_eq!(
+            background_send_after_outbound_for_mode(now, old, now, false),
+            None
+        );
+        assert_eq!(
+            background_send_wait_for_mode(now, old, now, false),
+            CONTROL_HEARTBEAT_INTERVAL
+        );
     }
 }

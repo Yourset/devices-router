@@ -11,7 +11,7 @@ use crate::input::{release_local_modifiers, send_key_event, send_mouse_input_eve
 use crate::keyboard_hook::{
     run_keyboard_hook, set_key_suppression, take_panic_request, RawKeyEvent,
 };
-use crate::latency::LatencyProbeTracker;
+use crate::latency::{LatencyProbeTracker, LinkStats, HOST_LATENCY_CAPABILITY};
 use crate::mouse::{
     at_left_edge, at_right_edge, cursor_position, screen_center, set_cursor_position,
     virtual_screen_rect, MousePosition, ScreenRect,
@@ -22,8 +22,8 @@ use crate::protocol::{
     MouseInputEvent, MouseSource, TargetSide,
 };
 use crate::transport::{
-    background_send_after_outbound, background_send_due, background_send_wait,
-    configure_control_stream, BackgroundSendDue,
+    background_send_after_outbound_for_mode, background_send_due_for_mode,
+    background_send_wait_for_mode, configure_control_stream, BackgroundSendDue,
 };
 use crate::updates::{check_remote_update, host_from_socket_addr, start_update_server};
 use anyhow::{bail, Context, Result};
@@ -705,6 +705,7 @@ enum RemoteHandshake {
         activity_capable: bool,
         activity_token: Option<String>,
         activity_port: Option<u16>,
+        host_latency_authoritative: bool,
     },
     LegacyHost,
 }
@@ -719,10 +720,14 @@ fn classify_remote_handshake(event: BridgeEvent) -> Result<RemoteHandshake> {
             ..
         } => {
             let activity_capable = capabilities.iter().any(|value| value == "udp_activity_v1");
+            let host_latency_authoritative = capabilities
+                .iter()
+                .any(|value| value == HOST_LATENCY_CAPABILITY);
             Ok(RemoteHandshake::Accepted {
                 activity_capable,
                 activity_token: activity_capable.then_some(activity_token).flatten(),
                 activity_port: activity_capable.then_some(activity_port).flatten(),
+                host_latency_authoritative,
             })
         }
         BridgeEvent::ServerHello {
@@ -790,16 +795,20 @@ fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
                         "multi_remote_v1".to_string(),
                         "server_hello_v1".to_string(),
                         UDP_ACTIVITY_CAPABILITY.to_string(),
+                        HOST_LATENCY_CAPABILITY.to_string(),
                     ],
                 })?)?;
-                let activity_sender = match read_remote_handshake(&mut stream) {
+                let (activity_sender, host_latency_authoritative) = match read_remote_handshake(
+                    &mut stream,
+                ) {
                     Ok(RemoteHandshake::Accepted {
                         activity_capable,
                         activity_token,
                         activity_port,
+                        host_latency_authoritative,
                     }) => {
                         runtime.log(format!("[remote] connected to host: {target}\n"));
-                        if activity_capable {
+                        let activity_sender = if activity_capable {
                             match (
                                 stream.peer_addr().ok().map(|address| address.ip()),
                                 activity_token,
@@ -827,11 +836,12 @@ fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
                             }
                         } else {
                             None
-                        }
+                        };
+                        (activity_sender, host_latency_authoritative)
                     }
                     Ok(RemoteHandshake::LegacyHost) => {
                         runtime.log(format!("[remote] connected to legacy host: {target}\n"));
-                        None
+                        (None, false)
                     }
                     Err(err) => {
                         runtime.set_connected(false);
@@ -859,24 +869,30 @@ fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
                 let writer_runtime = Arc::clone(&runtime);
                 let latency_tracker = Arc::new(Mutex::new(LatencyProbeTracker::default()));
                 let writer_latency_tracker = Arc::clone(&latency_tracker);
+                let remote_probe_enabled = !host_latency_authoritative;
                 thread::Builder::new()
                     .name("devices-router-remote-writer".to_string())
                     .spawn(move || {
                         let mut last_outbound = Instant::now();
                         let mut last_probe = Instant::now();
                         loop {
-                            let timeout =
-                                background_send_wait(last_outbound, last_probe, Instant::now());
+                            let timeout = background_send_wait_for_mode(
+                                last_outbound,
+                                last_probe,
+                                Instant::now(),
+                                remote_probe_enabled,
+                            );
                             let result = match event_rx.recv_timeout(timeout) {
                                 Ok(event) => encode_event(&event).and_then(|bytes| {
                                     writer.write_all(&bytes)?;
                                     let sent_at = Instant::now();
                                     last_outbound = sent_at;
                                     if matches!(
-                                        background_send_after_outbound(
+                                        background_send_after_outbound_for_mode(
                                             last_outbound,
                                             last_probe,
                                             sent_at,
+                                            remote_probe_enabled,
                                         ),
                                         Some(BackgroundSendDue::Probe)
                                     ) {
@@ -897,10 +913,11 @@ fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
                                     Ok(())
                                 }),
                                 Err(RecvTimeoutError::Timeout) => {
-                                    match background_send_due(
+                                    match background_send_due_for_mode(
                                         last_outbound,
                                         last_probe,
                                         Instant::now(),
+                                        remote_probe_enabled,
                                     ) {
                                         Some(BackgroundSendDue::Heartbeat) => {
                                             let heartbeat = BridgeEvent::Ping {
@@ -1001,9 +1018,27 @@ fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
                                 runtime.log(format!("[副电脑] 主电脑确认键盘目标：{label}\n"));
                             }
                             Ok(BridgeEvent::ActivityChannelState { active }) => {
+                                runtime.set_activity_transport(active);
                                 if let Some(sender) = &activity_sender {
                                     let _ = sender.set_ready(active);
                                 }
+                            }
+                            Ok(BridgeEvent::LinkStatsState {
+                                current_rtt_ms,
+                                median_rtt_ms,
+                                jitter_ms,
+                                loss_percent,
+                                sample_count,
+                            }) => {
+                                runtime.record_host_link_stats(LinkStats {
+                                    current_rtt_ms,
+                                    median_rtt_ms,
+                                    jitter_ms,
+                                    loss_percent: loss_percent
+                                        .and_then(|value| u8::try_from(value).ok())
+                                        .unwrap_or(0),
+                                    sample_count: usize::from(sample_count),
+                                });
                             }
                             Ok(BridgeEvent::MouseInput { event }) => {
                                 let config = runtime.config();
@@ -1044,8 +1079,13 @@ fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
                                         .lock()
                                         .expect("latency tracker lock poisoned")
                                         .complete_probe(reply_to, Instant::now());
-                                    if let Some(sample_ms) = sample_ms {
-                                        runtime.record_host_latency(sample_ms);
+                                    if sample_ms.is_some() {
+                                        runtime.record_host_link_stats(
+                                            latency_tracker
+                                                .lock()
+                                                .expect("latency tracker lock poisoned")
+                                                .stats(),
+                                        );
                                     }
                                 }
                             }
@@ -1434,7 +1474,7 @@ mod tests {
                 accepted: true,
                 reason: None,
                 max_devices: 2,
-                capabilities: vec!["udp_activity_v1".to_string()],
+                capabilities: vec!["udp_activity_v1".to_string(), "host_latency_v2".to_string(),],
                 activity_token: Some("token-123".to_string()),
                 activity_port: Some(8766),
             })
@@ -1443,6 +1483,7 @@ mod tests {
                 activity_capable: true,
                 activity_token: Some("token-123".to_string()),
                 activity_port: Some(8766),
+                host_latency_authoritative: true,
             }
         );
         assert_eq!(
@@ -1486,6 +1527,7 @@ mod tests {
                 activity_capable: false,
                 activity_token: None,
                 activity_port: None,
+                host_latency_authoritative: false,
             }
         );
     }

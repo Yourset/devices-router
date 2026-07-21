@@ -1,10 +1,13 @@
+use serde::Serialize;
 use std::collections::VecDeque;
 use std::time::Instant;
 
 const WINDOW_SIZE: usize = 20;
+pub const HOST_LATENCY_CAPABILITY: &str = "host_latency_v2";
 
 #[cfg_attr(not(test), allow(dead_code))]
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LinkStats {
     pub current_rtt_ms: Option<u64>,
     pub median_rtt_ms: Option<u64>,

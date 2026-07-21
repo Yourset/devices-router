@@ -256,7 +256,7 @@ fn run_remote_activity_worker(
                 Err(_) => break,
             },
         }
-        flush_pending(&runtime, &socket, &control_tx, &mut pending);
+        flush_pending(&runtime, &socket, &control_tx, &mut pending, &mut ready);
     }
 }
 
@@ -326,6 +326,7 @@ fn flush_pending(
     socket: &UdpSocket,
     control_tx: &mpsc::Sender<BridgeEvent>,
     pending: &mut Vec<PendingActivity>,
+    ready: &mut bool,
 ) {
     let now = Instant::now();
     for activity in pending.iter_mut() {
@@ -341,6 +342,8 @@ fn flush_pending(
                 );
                 activity.tcp_fallback_sent = true;
                 activity.retry_index = activity_retry_offsets().len();
+                *ready = false;
+                runtime.set_activity_transport(false);
                 break;
             }
             activity.retry_index += 1;
@@ -355,6 +358,8 @@ fn flush_pending(
             let _ =
                 send_tcp_mouse_activity(control_tx, activity.activity_id, activity.target_epoch);
             activity.tcp_fallback_sent = true;
+            *ready = false;
+            runtime.set_activity_transport(false);
         }
     }
     pending.retain(|activity| !activity.is_finished(now));
@@ -530,6 +535,7 @@ mod tests {
         ));
 
         assert!(sender.set_ready(true));
+        runtime.set_activity_transport(true);
         let started = Instant::now();
         assert!(sender.send_activity(7, Some(5), false));
 
@@ -555,6 +561,7 @@ mod tests {
                 target_epoch: Some(5),
             }
         );
+        assert_eq!(state.snapshot().activity_transport, "tcp");
     }
 
     #[test]

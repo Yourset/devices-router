@@ -177,6 +177,8 @@ mod tests {
             active_device_id: target.is_remote().then(|| target.as_status_value()),
             devices: Vec::new(),
             host_latency_ms: None,
+            link_stats: None,
+            activity_transport: "tcp".to_string(),
             elevated: false,
             logs: Vec::new(),
             config: AppConfig::default(),
@@ -218,6 +220,8 @@ mod tests {
             legacy: false,
             last_activity_ago_ms: Some(0),
             latency_ms: Some(4),
+            link_stats: None,
+            activity_transport: "tcp".to_string(),
         });
         assert!(tray_status_label(&status).contains("Studio PC"));
     }
