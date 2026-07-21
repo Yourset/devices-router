@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::app_state::{AppMode, AppRuntime, KeyboardTarget};
 use crate::config::AppConfig;
 use crate::discovery::{broadcast_host, discover_host, scan_local_network};
@@ -15,8 +17,8 @@ use crate::protocol::{
     MouseInputEvent, MouseSource, TargetSide,
 };
 use crate::updates::{check_remote_update, host_from_socket_addr, start_update_server};
-use anyhow::{Context, Result};
-use std::io::{BufRead, BufReader, Write};
+use anyhow::{bail, Context, Result};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::Arc;
@@ -51,8 +53,7 @@ impl Drop for HostSessionSafetyGuard {
 }
 
 pub fn force_local_release(runtime: &Arc<AppRuntime>, log_line: &str) -> bool {
-    let changed = runtime.target() != KeyboardTarget::Local;
-    runtime.set_target(KeyboardTarget::Local);
+    let changed = crate::multi_host::switch_target(runtime, KeyboardTarget::Local, log_line);
     runtime.mark_local_release();
     runtime.mark_emergency_release();
     set_key_suppression(false);
@@ -60,9 +61,6 @@ pub fn force_local_release(runtime: &Arc<AppRuntime>, log_line: &str) -> bool {
     let _ = runtime.send_remote_event(BridgeEvent::TargetRequest {
         target: TargetSide::Local,
     });
-    if changed {
-        runtime.log(log_line);
-    }
     changed
 }
 
@@ -83,7 +81,7 @@ fn start_host(runtime: Arc<AppRuntime>) -> Result<()> {
     thread::Builder::new()
         .name("devices-router-host".to_string())
         .spawn(move || {
-            if let Err(err) = run_host(runtime.clone()) {
+            if let Err(err) = crate::multi_host::run(runtime.clone()) {
                 runtime.log(format!("[主电脑] 已停止：{err:#}\n"));
             }
         })
@@ -270,10 +268,10 @@ fn handle_host_client(
         }
         let config = runtime.config();
         let current_target = runtime.target();
-        let suppress_mouse = should_suppress_local_mouse_input(&config, current_target);
+        let suppress_mouse = should_suppress_local_mouse_input(&config, current_target.clone());
         if should_release_remote_inputs(
-            last_target,
-            current_target,
+            last_target.clone(),
+            current_target.clone(),
             mouse_was_suppressed,
             suppress_mouse,
         ) {
@@ -284,7 +282,7 @@ fn handle_host_client(
         }
         set_mouse_input_suppression(suppress_mouse);
         mouse_was_suppressed = suppress_mouse;
-        last_target = current_target;
+        last_target = current_target.clone();
         while let Ok(event) = mouse_rx.try_recv() {
             if suppress_mouse
                 && !send_bridge_event(
@@ -536,7 +534,7 @@ fn apply_host_target(
             runtime.log(format!("[主电脑] 释放本地修饰键失败：{err:#}\n"));
         }
     }
-    runtime.set_target(target);
+    runtime.set_target(target.clone());
     if target == KeyboardTarget::Local {
         runtime.mark_local_release();
     }
@@ -561,10 +559,18 @@ fn apply_host_target_and_notify(
     changed
 }
 
+fn target_state_for_device(target: &crate::routing::KeyboardTarget, device_id: &str) -> TargetSide {
+    if target.device_id() == Some(device_id) {
+        TargetSide::Remote
+    } else {
+        TargetSide::Local
+    }
+}
+
 fn send_target_state(runtime: &Arc<AppRuntime>, writer: &mut TcpStream) {
     let target = match runtime.target() {
         KeyboardTarget::Local => TargetSide::Local,
-        KeyboardTarget::Remote => TargetSide::Remote,
+        KeyboardTarget::Remote | KeyboardTarget::Device(_) => TargetSide::Remote,
     };
     let event = BridgeEvent::TargetState { target };
     if let Err(err) = encode_event(&event).and_then(|bytes| {
@@ -675,6 +681,55 @@ fn start_remote(runtime: Arc<AppRuntime>) -> Result<()> {
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RemoteHandshake {
+    Accepted,
+    LegacyHost,
+}
+
+fn classify_remote_handshake(event: BridgeEvent) -> Result<RemoteHandshake> {
+    match event {
+        BridgeEvent::ServerHello { accepted: true, .. } => Ok(RemoteHandshake::Accepted),
+        BridgeEvent::ServerHello {
+            accepted: false,
+            reason,
+            ..
+        } => bail!(
+            "{}",
+            reason.unwrap_or_else(|| "host rejected the connection".to_string())
+        ),
+        BridgeEvent::Ping { .. } => Ok(RemoteHandshake::LegacyHost),
+        other => bail!("unexpected host handshake response: {other:?}"),
+    }
+}
+
+fn read_remote_handshake(stream: &mut TcpStream) -> Result<RemoteHandshake> {
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .context("set host handshake timeout")?;
+    let mut bytes = Vec::with_capacity(256);
+    let mut byte = [0_u8; 1];
+    loop {
+        match stream.read(&mut byte) {
+            Ok(0) => bail!("host closed during handshake"),
+            Ok(_) => {
+                bytes.push(byte[0]);
+                if byte[0] == b'\n' {
+                    break;
+                }
+                if bytes.len() > 8 * 1024 {
+                    bail!("host handshake response is too large");
+                }
+            }
+            Err(err) => return Err(err).context("read host handshake response"),
+        }
+    }
+    stream
+        .set_read_timeout(None)
+        .context("clear host handshake timeout")?;
+    classify_remote_handshake(decode_event(&bytes)?)
+}
+
 fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
     while !runtime.should_stop() {
         let Some(target) = resolve_remote_target(&runtime) else {
@@ -683,8 +738,6 @@ fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
         };
         match TcpStream::connect(target.as_str()) {
             Ok(mut stream) => {
-                runtime.log(format!("[副电脑] 已连接主电脑：{target}\n"));
-                runtime.set_connected(true);
                 let config = runtime.config();
                 stream.write_all(&encode_event(&BridgeEvent::ClientHello {
                     role: ClientRole::Remote,
@@ -695,6 +748,23 @@ fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
                         "server_hello_v1".to_string(),
                     ],
                 })?)?;
+                match read_remote_handshake(&mut stream) {
+                    Ok(RemoteHandshake::Accepted) => {
+                        runtime.log(format!("[remote] connected to host: {target}\n"))
+                    }
+                    Ok(RemoteHandshake::LegacyHost) => {
+                        runtime.log(format!("[remote] connected to legacy host: {target}\n"))
+                    }
+                    Err(err) => {
+                        runtime.set_connected(false);
+                        runtime.log(format!(
+                            "[remote] host rejected or failed handshake: {err:#}\n"
+                        ));
+                        thread::sleep(Duration::from_secs(2));
+                        continue;
+                    }
+                }
+                runtime.set_connected(true);
                 if let Ok(address) = stream.peer_addr() {
                     if let Some(host) = host_from_socket_addr(&address) {
                         check_remote_update(
@@ -761,12 +831,16 @@ fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
                             Ok(BridgeEvent::TargetState { target }) => {
                                 let target = match target {
                                     TargetSide::Local => KeyboardTarget::Local,
-                                    TargetSide::Remote => KeyboardTarget::Remote,
+                                    TargetSide::Remote => {
+                                        KeyboardTarget::Device(runtime.config().device_id)
+                                    }
                                 };
-                                runtime.set_target(target);
+                                runtime.set_target(target.clone());
                                 let label = match target {
-                                    KeyboardTarget::Local => "主电脑",
-                                    KeyboardTarget::Remote => "副电脑",
+                                    KeyboardTarget::Local => "\u{4e3b}\u{7535}\u{8111}",
+                                    KeyboardTarget::Remote | KeyboardTarget::Device(_) => {
+                                        "\u{526f}\u{7535}\u{8111}"
+                                    }
                                 };
                                 runtime.log(format!("[副电脑] 主电脑确认键盘目标：{label}\n"));
                             }
@@ -1161,5 +1235,44 @@ mod tests {
             KeyboardTarget::Local,
             false,
         ));
+    }
+
+    #[test]
+    fn remote_handshake_accepts_new_and_legacy_hosts() {
+        assert_eq!(
+            classify_remote_handshake(BridgeEvent::ServerHello {
+                accepted: true,
+                reason: None,
+                max_devices: 2
+            })
+            .unwrap(),
+            RemoteHandshake::Accepted
+        );
+        assert_eq!(
+            classify_remote_handshake(BridgeEvent::Ping {
+                message: "ok".to_string()
+            })
+            .unwrap(),
+            RemoteHandshake::LegacyHost
+        );
+    }
+
+    #[test]
+    fn remote_handshake_surfaces_host_rejection_reason() {
+        let error = classify_remote_handshake(BridgeEvent::ServerHello {
+            accepted: false,
+            reason: Some("two device limit".to_string()),
+            max_devices: 2,
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("two device limit"));
+    }
+
+    #[test]
+    fn target_state_is_remote_only_for_selected_device() {
+        let target = crate::routing::KeyboardTarget::Device("a".to_string());
+
+        assert_eq!(target_state_for_device(&target, "a"), TargetSide::Remote);
+        assert_eq!(target_state_for_device(&target, "b"), TargetSide::Local);
     }
 }

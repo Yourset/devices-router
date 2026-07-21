@@ -103,6 +103,9 @@ impl AppConfig {
 
     pub fn save(&self) {
         let path = config_path();
+        if cfg!(test) {
+            return;
+        }
         if let Some(parent) = path.parent() {
             let _ = fs::create_dir_all(parent);
         }
@@ -322,10 +325,10 @@ mod tests {
 
         config
             .device_aliases
-            .insert("device-a".to_string(), "????".to_string());
+            .insert("device-a".to_string(), "Studio PC".to_string());
         let payload = serde_json::to_string(&config).unwrap();
         let restored: AppConfig = serde_json::from_str(&payload).unwrap();
 
-        assert_eq!(restored.device_aliases["device-a"], "????");
+        assert_eq!(restored.device_aliases["device-a"], "Studio PC");
     }
 }

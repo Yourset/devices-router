@@ -18,6 +18,7 @@ pub struct SessionIdentity {
 pub struct RegisterAcceptance {
     pub device_id: String,
     pub generation: u64,
+    #[allow(dead_code)]
     pub legacy: bool,
     pub replaced: bool,
 }
@@ -28,6 +29,7 @@ pub enum RegisterResult {
     Rejected(String),
 }
 
+#[cfg(test)]
 impl RegisterResult {
     pub fn is_accepted(&self) -> bool {
         matches!(self, Self::Accepted(_))
@@ -59,7 +61,7 @@ pub struct DeviceStatus {
     pub last_activity_ago_ms: Option<u64>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct SessionRecord {
     generation: u64,
     device_name: String,
@@ -69,7 +71,7 @@ struct SessionRecord {
     last_activity: Option<Instant>,
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct SessionRegistry {
     sessions: HashMap<String, SessionRecord>,
     next_generation: u64,
@@ -90,11 +92,11 @@ impl SessionRegistry {
         let device_id = supplied_id.unwrap_or(LEGACY_SLOT_ID).to_string();
 
         if legacy && self.sessions.contains_key(LEGACY_SLOT_ID) {
-            return RegisterResult::Rejected("?????????????".to_string());
+            return RegisterResult::Rejected("Studio PCStudio PCStudio PC?".to_string());
         }
         let replaced = self.sessions.contains_key(&device_id);
         if !replaced && self.sessions.len() >= MAX_REMOTE_DEVICES {
-            return RegisterResult::Rejected("??????????".to_string());
+            return RegisterResult::Rejected("two remote device limit reached".to_string());
         }
 
         self.next_generation = self.next_generation.wrapping_add(1).max(1);
@@ -137,12 +139,19 @@ impl SessionRegistry {
         self.sessions.contains_key(device_id)
     }
 
+    pub fn generation_matches(&self, device_id: &str, generation: u64) -> bool {
+        self.sessions
+            .get(device_id)
+            .is_some_and(|session| session.generation == generation)
+    }
+
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.sessions.len()
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.sessions.is_empty()
+    pub fn clear(&mut self) {
+        self.sessions.clear();
     }
 
     pub fn sender_for(&self, device_id: &str) -> Option<mpsc::Sender<BridgeEvent>> {
@@ -181,9 +190,9 @@ impl SessionRegistry {
                 address: session.address.clone(),
                 connected: true,
                 legacy: session.legacy,
-                last_activity_ago_ms: session.last_activity.map(|last| {
-                    now.saturating_duration_since(last).as_millis() as u64
-                }),
+                last_activity_ago_ms: session
+                    .last_activity
+                    .map(|last| now.saturating_duration_since(last).as_millis() as u64),
             })
             .collect::<Vec<_>>();
         devices.sort_by(|left, right| left.device_id.cmp(&right.device_id));
@@ -216,13 +225,12 @@ mod tests {
         assert!(registry
             .register(identity(Some("b"), "B", "10.0.0.2"), tx.clone())
             .is_accepted());
-        let rejected =
-            registry.register(identity(Some("c"), "C", "10.0.0.3"), tx);
+        let rejected = registry.register(identity(Some("c"), "C", "10.0.0.3"), tx);
 
         assert_eq!(registry.len(), 2);
         assert_eq!(
             rejected.rejection_reason(),
-            Some("??????????")
+            Some("two remote device limit reached")
         );
     }
 
@@ -232,11 +240,13 @@ mod tests {
         let (first_tx, _) = mpsc::channel::<BridgeEvent>();
         let first = registry
             .register(identity(Some("a"), "A", "10.0.0.1"), first_tx)
-            .accepted().unwrap();
+            .accepted()
+            .unwrap();
         let (second_tx, _) = mpsc::channel::<BridgeEvent>();
         let second = registry
             .register(identity(Some("a"), "A2", "10.0.0.9"), second_tx)
-            .accepted().unwrap();
+            .accepted()
+            .unwrap();
 
         assert!(second.generation > first.generation);
         assert!(!registry.remove(&first.device_id, first.generation));
@@ -250,13 +260,14 @@ mod tests {
         let (tx, _) = mpsc::channel::<BridgeEvent>();
         let first = registry
             .register(identity(None, "old-a", "10.0.0.1"), tx.clone())
-            .accepted().unwrap();
+            .accepted()
+            .unwrap();
         let second = registry.register(identity(None, "old-b", "10.0.0.2"), tx);
 
         assert!(first.legacy);
         assert_eq!(
             second.rejection_reason(),
-            Some("?????????????")
+            Some("Studio PCStudio PCStudio PC?")
         );
         assert_eq!(registry.len(), 1);
     }
@@ -267,11 +278,11 @@ mod tests {
         let (tx, _) = mpsc::channel::<BridgeEvent>();
         registry.register(identity(Some("a"), "Windows-A", "10.0.0.1"), tx);
         let aliases =
-            std::collections::BTreeMap::from([("a".to_string(), "????".to_string())]);
+            std::collections::BTreeMap::from([("a".to_string(), "Studio PC".to_string())]);
 
         let devices = registry.snapshots(&aliases);
 
-        assert_eq!(devices[0].name, "????");
+        assert_eq!(devices[0].name, "Studio PC");
         assert_eq!(devices[0].device_id, "a");
         assert!(devices[0].connected);
     }

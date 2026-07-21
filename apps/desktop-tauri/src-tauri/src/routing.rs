@@ -3,7 +3,29 @@ use std::time::{Duration, Instant};
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum KeyboardTarget {
     Local,
+    Remote,
     Device(String),
+}
+
+impl KeyboardTarget {
+    pub fn as_status_value(&self) -> String {
+        match self {
+            Self::Local => "local".to_string(),
+            Self::Remote => "remote".to_string(),
+            Self::Device(device_id) => device_id.clone(),
+        }
+    }
+
+    pub fn device_id(&self) -> Option<&str> {
+        match self {
+            Self::Device(device_id) => Some(device_id),
+            Self::Local | Self::Remote => None,
+        }
+    }
+
+    pub fn is_remote(&self) -> bool {
+        !matches!(self, Self::Local)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -24,15 +46,12 @@ impl ActivityArbiter {
         }
     }
 
+    #[cfg(test)]
     pub fn current(&self) -> &KeyboardTarget {
         &self.current
     }
 
-    pub fn observe(
-        &mut self,
-        target: KeyboardTarget,
-        now: Instant,
-    ) -> Option<KeyboardTarget> {
+    pub fn observe(&mut self, target: KeyboardTarget, now: Instant) -> Option<KeyboardTarget> {
         if target == self.current {
             self.pending = None;
             return None;
@@ -86,10 +105,7 @@ mod tests {
         let mut arbiter =
             ActivityArbiter::ready(KeyboardTarget::Local, Duration::from_millis(30), start);
 
-        assert_eq!(
-            arbiter.observe(device("a"), start),
-            Some(device("a"))
-        );
+        assert_eq!(arbiter.observe(device("a"), start), Some(device("a")));
         assert_eq!(arbiter.current(), &device("a"));
     }
 
@@ -104,10 +120,7 @@ mod tests {
             arbiter.observe(device("b"), start + Duration::from_millis(10)),
             None
         );
-        assert_eq!(
-            arbiter.poll(start + Duration::from_millis(29)),
-            None
-        );
+        assert_eq!(arbiter.poll(start + Duration::from_millis(29)), None);
         assert_eq!(
             arbiter.poll(start + Duration::from_millis(30)),
             Some(device("b"))

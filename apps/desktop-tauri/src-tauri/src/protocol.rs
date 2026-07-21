@@ -7,7 +7,11 @@ pub enum BridgeEvent {
         role: ClientRole,
         #[serde(default, rename = "deviceId", skip_serializing_if = "Option::is_none")]
         device_id: Option<String>,
-        #[serde(default, rename = "deviceName", skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            rename = "deviceName",
+            skip_serializing_if = "Option::is_none"
+        )]
         device_name: Option<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         capabilities: Vec<String>,
@@ -19,12 +23,25 @@ pub enum BridgeEvent {
         #[serde(rename = "maxDevices")]
         max_devices: u8,
     },
-    Ping { message: String },
-    MouseActivity { source: MouseSource },
-    MouseInput { event: MouseInputEvent },
-    TargetRequest { target: TargetSide },
-    TargetState { target: TargetSide },
-    Key { action: KeyAction, key: String },
+    Ping {
+        message: String,
+    },
+    MouseActivity {
+        source: MouseSource,
+    },
+    MouseInput {
+        event: MouseInputEvent,
+    },
+    TargetRequest {
+        target: TargetSide,
+    },
+    TargetState {
+        target: TargetSide,
+    },
+    Key {
+        action: KeyAction,
+        key: String,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -168,14 +185,11 @@ mod tests {
     fn server_hello_rejection_round_trips() {
         let event = BridgeEvent::ServerHello {
             accepted: false,
-            reason: Some("??????????".to_string()),
+            reason: Some("two remote device limit reached".to_string()),
             max_devices: 2,
         };
 
-        assert_eq!(
-            decode_event(&encode_event(&event).unwrap()).unwrap(),
-            event
-        );
+        assert_eq!(decode_event(&encode_event(&event).unwrap()).unwrap(), event);
     }
 
     #[test]

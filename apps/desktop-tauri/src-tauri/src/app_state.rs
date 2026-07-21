@@ -1,5 +1,7 @@
 use crate::config::AppConfig;
 use crate::protocol::BridgeEvent;
+pub use crate::routing::KeyboardTarget;
+use crate::sessions::{DeviceStatus, RegisterResult, SessionIdentity, SessionRegistry};
 use serde::Serialize;
 use std::collections::VecDeque;
 use std::sync::mpsc;
@@ -42,13 +44,6 @@ impl AppMode {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum KeyboardTarget {
-    Local,
-    Remote,
-}
-
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppStatus {
@@ -56,7 +51,10 @@ pub struct AppStatus {
     pub mode: String,
     pub running: bool,
     pub connected: bool,
-    pub target: KeyboardTarget,
+    pub target: String,
+    pub local_device_name: String,
+    pub active_device_id: Option<String>,
+    pub devices: Vec<DeviceStatus>,
     pub elevated: bool,
     pub logs: Vec<String>,
     pub config: AppConfig,
@@ -83,6 +81,7 @@ struct InnerState {
     remote_sender: Option<mpsc::Sender<BridgeEvent>>,
     remote_sender_generation: u64,
     local_release_generation: u64,
+    sessions: SessionRegistry,
     emergency_release_generation: u64,
 }
 
@@ -100,6 +99,7 @@ impl SharedState {
                     remote_sender: None,
                     remote_sender_generation: 0,
                     local_release_generation: 0,
+                    sessions: SessionRegistry::default(),
                     emergency_release_generation: 0,
                 }),
                 stop: AtomicBool::new(false),
@@ -119,6 +119,7 @@ impl SharedState {
         inner.target = KeyboardTarget::Local;
         inner.remote_sender = None;
         inner.remote_sender_generation = inner.remote_sender_generation.wrapping_add(1);
+        inner.sessions.clear();
         inner.config.last_mode = AppMode::Idle.as_str().to_string();
         inner.config.save();
         push_log(&mut inner.logs, "[应用] 已停止\n".to_string());
@@ -126,12 +127,17 @@ impl SharedState {
 
     pub fn snapshot(&self) -> AppStatus {
         let inner = self.inner.state.lock().expect("state lock poisoned");
+        let devices = inner.sessions.snapshots(&inner.config.device_aliases);
+        let active_device_id = inner.target.device_id().map(str::to_string);
         AppStatus {
             version: inner.version.clone(),
             mode: inner.mode.as_str().to_string(),
             running: inner.mode != AppMode::Idle,
-            connected: inner.connected,
-            target: inner.target,
+            connected: !devices.is_empty() || inner.connected,
+            target: inner.target.as_status_value(),
+            local_device_name: crate::config::computer_name(),
+            active_device_id,
+            devices,
             elevated: crate::elevation::is_elevated(),
             logs: inner.logs.iter().cloned().collect(),
             config: inner.config.clone(),
@@ -170,6 +176,7 @@ impl AppRuntime {
         inner.remote_sender_generation = inner.remote_sender_generation.wrapping_add(1);
         inner.config.last_mode = mode.as_str().to_string();
         inner.config.save();
+        inner.sessions.clear();
         push_log(
             &mut inner.logs,
             format!("[应用] 已启动{}模式\n", mode.label()),
@@ -196,7 +203,7 @@ impl AppRuntime {
 
     pub fn target(&self) -> KeyboardTarget {
         let inner = self.state.lock().expect("state lock poisoned");
-        inner.target
+        inner.target.clone()
     }
 
     pub fn log(&self, line: impl Into<String>) {
@@ -207,6 +214,73 @@ impl AppRuntime {
     pub fn config(&self) -> AppConfig {
         let inner = self.state.lock().expect("state lock poisoned");
         inner.config.clone()
+    }
+
+    pub fn register_session(
+        &self,
+        identity: SessionIdentity,
+        sender: mpsc::Sender<BridgeEvent>,
+    ) -> RegisterResult {
+        let mut inner = self.state.lock().expect("state lock poisoned");
+        inner.sessions.register(identity, sender)
+    }
+
+    pub fn remove_session(&self, device_id: &str, generation: u64) -> bool {
+        let mut inner = self.state.lock().expect("state lock poisoned");
+        inner.sessions.remove(device_id, generation)
+    }
+
+    pub fn session_is_current(&self, device_id: &str) -> bool {
+        let inner = self.state.lock().expect("state lock poisoned");
+        inner.sessions.contains(device_id)
+    }
+
+    pub fn session_generation_matches(&self, device_id: &str, generation: u64) -> bool {
+        let inner = self.state.lock().expect("state lock poisoned");
+        inner.sessions.generation_matches(device_id, generation)
+    }
+
+    pub fn session_sender(&self, device_id: &str) -> Option<mpsc::Sender<BridgeEvent>> {
+        let inner = self.state.lock().expect("state lock poisoned");
+        inner.sessions.sender_for(device_id)
+    }
+
+    pub fn session_senders(&self) -> Vec<(String, mpsc::Sender<BridgeEvent>)> {
+        let inner = self.state.lock().expect("state lock poisoned");
+        inner.sessions.senders()
+    }
+
+    pub fn mark_session_activity(&self, device_id: &str, now: std::time::Instant) -> bool {
+        let mut inner = self.state.lock().expect("state lock poisoned");
+        inner.sessions.mark_activity(device_id, now)
+    }
+
+    pub fn first_session_id(&self) -> Option<String> {
+        let inner = self.state.lock().expect("state lock poisoned");
+        let mut ids = inner
+            .sessions
+            .senders()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect::<Vec<_>>();
+        ids.sort();
+        ids.into_iter().next()
+    }
+
+    pub fn set_device_alias(&self, device_id: &str, alias: Option<String>) {
+        let mut inner = self.state.lock().expect("state lock poisoned");
+        let alias = alias
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        if let Some(alias) = alias {
+            inner
+                .config
+                .device_aliases
+                .insert(device_id.to_string(), alias);
+        } else {
+            inner.config.device_aliases.remove(device_id);
+        }
+        inner.config.save();
     }
 
     pub fn update_config(&self, updater: impl FnOnce(&mut AppConfig)) -> AppConfig {
@@ -301,5 +375,51 @@ mod tests {
             runtime.emergency_release_generation(),
             emergency_before.wrapping_add(1)
         );
+    }
+
+    #[test]
+    fn status_lists_registered_devices_and_active_device_id() {
+        let state = SharedState::new("test");
+        let runtime = state.runtime();
+        let (sender, _) = mpsc::channel();
+        let accepted = runtime
+            .register_session(
+                crate::sessions::SessionIdentity {
+                    device_id: Some("device-a".to_string()),
+                    device_name: Some("Windows-A".to_string()),
+                    address: "10.0.0.1:8765".to_string(),
+                },
+                sender,
+            )
+            .accepted()
+            .unwrap();
+        runtime.set_target(KeyboardTarget::Device(accepted.device_id.clone()));
+
+        let status = state.snapshot();
+
+        assert!(status.connected);
+        assert_eq!(status.target, "device-a");
+        assert_eq!(status.active_device_id.as_deref(), Some("device-a"));
+        assert_eq!(status.devices.len(), 1);
+        assert_eq!(status.devices[0].name, "Windows-A");
+    }
+
+    #[test]
+    fn device_alias_is_persisted_in_status_display() {
+        let state = SharedState::new("test");
+        let runtime = state.runtime();
+        let (sender, _) = mpsc::channel();
+        runtime.register_session(
+            crate::sessions::SessionIdentity {
+                device_id: Some("device-a".to_string()),
+                device_name: Some("Windows-A".to_string()),
+                address: "10.0.0.1:8765".to_string(),
+            },
+            sender,
+        );
+
+        runtime.set_device_alias("device-a", Some("Studio PC".to_string()));
+
+        assert_eq!(state.snapshot().devices[0].name, "Studio PC");
     }
 }
