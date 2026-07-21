@@ -2,7 +2,7 @@
 
 A small Windows utility that routes one ordinary keyboard between two Windows PCs.
 
-Devices Router forwards keyboard input but never forwards the mouse. `v0.1.33` keeps the desktop console fixed in place: periodic status refreshes no longer rebuild the whole page, and only the log viewer scrolls.
+Devices Router forwards keyboard input but never forwards the mouse. `v0.2.0` keeps the desktop console fixed in place: periodic status refreshes no longer rebuild the whole page, and only the log viewer scrolls.
 
 Language / 璇█: [绠€浣撲腑鏂嘳(README.md) | **English**
 
@@ -10,7 +10,7 @@ Language / 璇█: [绠€浣撲腑鏂嘳(README.md) | **English**
 
 - Platform: Windows -> Windows
 - Main implementation: Tauri/Rust desktop app in `apps/desktop-tauri/`
-- Current version: `v0.1.33`
+- Current version: `v0.2.0`
 - For normal users: install the `.exe` setup package. Node.js, Rust, Python, and other development dependencies are not required.
 - Ports:
   - TCP `8765`: keyboard events, control messages, heartbeat
@@ -146,3 +146,12 @@ A browser page cannot inject system-level keyboard input into other Windows appl
 This is a practical personal utility for people who already use Logitech Flow for mouse movement but do not own a Logitech keyboard. It does not crack Flow or emulate Logitech devices; it works as an independent keyboard bridge.
 
 The more honest origin story: I wanted to vibe code on another PC while keeping the main PC available for League of Legends or other windows. Flow moved the mouse, but the keyboard did not follow. See [Motivation](docs/motivation.en.md).
+
+
+## v0.2.0: Two Remote PCs
+
+- One host can keep two remote PCs connected at the same time; a third distinct remote is rejected without displacing either active session.
+- Logitech Flow still owns mouse movement. Devices Router only observes mouse activity on all three PCs and routes the keyboard to the last active PC.
+- The host UI shows the local PC and two remote slots, supports per-device aliases, and allows explicit device selection.
+- `Ctrl+Alt+Esc` remains a host-local emergency release. Disconnects and send failures immediately return the keyboard to the host.
+- Upgrade the host first, then both remotes. During mixed-version operation, only one legacy remote without a device ID can connect.
