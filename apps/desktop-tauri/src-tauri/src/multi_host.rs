@@ -13,7 +13,8 @@ use crate::protocol::{
 use crate::routing::{ActivityArbiter, KeyboardTarget};
 use crate::sessions::{RegisterResult, SessionIdentity, MAX_REMOTE_DEVICES};
 use crate::transport::{
-    background_send_due, background_send_wait, configure_control_stream, BackgroundSendDue,
+    background_send_after_outbound, background_send_due, background_send_wait,
+    configure_control_stream, BackgroundSendDue,
 };
 use crate::updates::start_update_server;
 use anyhow::{Context, Result};
@@ -324,7 +325,26 @@ fn handle_host_connection(
                 let result = match outbound_rx.recv_timeout(timeout) {
                     Ok(event) => encode_event(&event).and_then(|bytes| {
                         writer.write_all(&bytes)?;
-                        last_outbound = Instant::now();
+                        let sent_at = Instant::now();
+                        last_outbound = sent_at;
+                        if matches!(
+                            background_send_after_outbound(last_outbound, last_probe, sent_at),
+                            Some(BackgroundSendDue::Probe)
+                        ) {
+                            let probe_sent_at = Instant::now();
+                            let probe_id = writer_latency_tracker
+                                .lock()
+                                .expect("latency tracker lock poisoned")
+                                .start_probe(probe_sent_at);
+                            let probe = BridgeEvent::Ping {
+                                message: "latency-probe".to_string(),
+                                probe_id: Some(probe_id),
+                                reply_to: None,
+                            };
+                            writer.write_all(&encode_event(&probe)?)?;
+                            last_outbound = probe_sent_at;
+                            last_probe = probe_sent_at;
+                        }
                         Ok(())
                     }),
                     Err(RecvTimeoutError::Timeout) => {

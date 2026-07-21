@@ -28,6 +28,17 @@ pub(crate) fn background_send_due(
     }
 }
 
+pub(crate) fn background_send_after_outbound(
+    last_outbound: Instant,
+    last_probe: Instant,
+    now: Instant,
+) -> Option<BackgroundSendDue> {
+    match background_send_due(last_outbound, last_probe, now) {
+        Some(BackgroundSendDue::Probe) => Some(BackgroundSendDue::Probe),
+        _ => None,
+    }
+}
+
 pub(crate) fn background_send_wait(
     last_outbound: Instant,
     last_probe: Instant,
@@ -91,5 +102,22 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn event_traffic_still_requires_probe_once_probe_budget_expires() {
+        let start = Instant::now();
+        let last_probe = start;
+
+        for step in 1..=10 {
+            let now = start + Duration::from_millis(step * 50);
+            let due = background_send_after_outbound(now, last_probe, now);
+
+            if step < 10 {
+                assert_eq!(due, None, "probe should not fire early at step {step}");
+            } else {
+                assert_eq!(due, Some(BackgroundSendDue::Probe));
+            }
+        }
     }
 }
