@@ -1,6 +1,7 @@
 use crate::protocol::{
     decode_discovery, decode_event, encode_discovery, encode_event, BridgeEvent, ClientRole,
 };
+use crate::transport::configure_control_stream;
 use anyhow::{Context, Result};
 use local_ip_address::list_afinet_netifas;
 use std::collections::VecDeque;
@@ -131,6 +132,9 @@ fn verifies_devices_router_host(address: SocketAddr, timeout: Duration) -> bool 
     let Ok(mut stream) = TcpStream::connect_timeout(&address, timeout) else {
         return false;
     };
+    if configure_control_stream(&stream).is_err() {
+        return false;
+    }
     let _ = stream.set_read_timeout(Some(timeout));
     let _ = stream.set_write_timeout(Some(timeout));
     let Ok(hello) = encode_event(&BridgeEvent::ClientHello {

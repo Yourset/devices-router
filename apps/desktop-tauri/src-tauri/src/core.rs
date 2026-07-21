@@ -17,6 +17,9 @@ use crate::protocol::{
     decode_event, encode_event, BridgeEvent, ClientRole, KeyAction, MouseButton, MouseButtonAction,
     MouseInputEvent, MouseSource, TargetSide,
 };
+use crate::transport::{
+    background_send_due, background_send_wait, configure_control_stream, BackgroundSendDue,
+};
 use crate::updates::{check_remote_update, host_from_socket_addr, start_update_server};
 use anyhow::{bail, Context, Result};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -28,7 +31,6 @@ use std::time::{Duration, Instant};
 
 const TCP_PORT: u16 = 8765;
 const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(300);
-const LATENCY_PROBE_INTERVAL: Duration = Duration::from_millis(500);
 const LOCAL_RELEASE_COOLDOWN: Duration = Duration::from_millis(120);
 const EMERGENCY_RELEASE_COOLDOWN: Duration = Duration::from_secs(1);
 const HOST_SESSION_POLL_INTERVAL: Duration = Duration::from_millis(5);
@@ -174,6 +176,7 @@ fn accept_remote_client(
     mut stream: TcpStream,
     address: SocketAddr,
 ) -> Result<Option<TcpStream>> {
+    configure_control_stream(&stream).context("configure host control stream")?;
     stream
         .set_read_timeout(Some(Duration::from_millis(900)))
         .context("设置握手超时失败")?;
@@ -748,6 +751,11 @@ fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
         };
         match TcpStream::connect(target.as_str()) {
             Ok(mut stream) => {
+                if let Err(err) = configure_control_stream(&stream) {
+                    runtime.log(format!("[remote] failed to configure low-latency stream: {err}\n"));
+                    thread::sleep(Duration::from_secs(2));
+                    continue;
+                }
                 let config = runtime.config();
                 stream.write_all(&encode_event(&BridgeEvent::ClientHello {
                     role: ClientRole::Remote,
@@ -795,35 +803,61 @@ fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
                 thread::Builder::new()
                     .name("devices-router-remote-writer".to_string())
                     .spawn(move || {
+                        let mut last_outbound = Instant::now();
                         let mut last_probe = Instant::now();
                         loop {
-                            let event = match event_rx.recv_timeout(HEARTBEAT_INTERVAL) {
-                                Ok(event) => event,
-                                Err(RecvTimeoutError::Timeout) => BridgeEvent::Ping {
-                                    message: "remote-heartbeat".to_string(),
-                                    probe_id: None,
-                                    reply_to: None,
-                                },
+                            let timeout = background_send_wait(
+                                last_outbound,
+                                last_probe,
+                                Instant::now(),
+                            );
+                            let result = match event_rx.recv_timeout(timeout) {
+                                Ok(event) => encode_event(&event).and_then(|bytes| {
+                                    writer.write_all(&bytes)?;
+                                    last_outbound = Instant::now();
+                                    Ok(())
+                                }),
+                                Err(RecvTimeoutError::Timeout) => {
+                                    match background_send_due(
+                                        last_outbound,
+                                        last_probe,
+                                        Instant::now(),
+                                    ) {
+                                        Some(BackgroundSendDue::Heartbeat) => {
+                                            let heartbeat = BridgeEvent::Ping {
+                                                message: "remote-heartbeat".to_string(),
+                                                probe_id: None,
+                                                reply_to: None,
+                                            };
+                                            encode_event(&heartbeat).and_then(|bytes| {
+                                                writer.write_all(&bytes)?;
+                                                last_outbound = Instant::now();
+                                                Ok(())
+                                            })
+                                        }
+                                        Some(BackgroundSendDue::Probe) => {
+                                            let now = Instant::now();
+                                            let probe_id = writer_latency_tracker
+                                                .lock()
+                                                .expect("latency tracker lock poisoned")
+                                                .start_probe(now);
+                                            let probe = BridgeEvent::Ping {
+                                                message: "latency-probe".to_string(),
+                                                probe_id: Some(probe_id),
+                                                reply_to: None,
+                                            };
+                                            encode_event(&probe).and_then(|bytes| {
+                                                writer.write_all(&bytes)?;
+                                                last_outbound = now;
+                                                last_probe = now;
+                                                Ok(())
+                                            })
+                                        }
+                                        None => Ok(()),
+                                    }
+                                }
                                 Err(RecvTimeoutError::Disconnected) => break,
                             };
-                            let result = encode_event(&event).and_then(|bytes| {
-                                writer.write_all(&bytes)?;
-                                if last_probe.elapsed() >= LATENCY_PROBE_INTERVAL {
-                                    let now = Instant::now();
-                                    let probe_id = writer_latency_tracker
-                                        .lock()
-                                        .expect("latency tracker lock poisoned")
-                                        .start_probe(now);
-                                    let probe = BridgeEvent::Ping {
-                                        message: "latency-probe".to_string(),
-                                        probe_id: Some(probe_id),
-                                        reply_to: None,
-                                    };
-                                    writer.write_all(&encode_event(&probe)?)?;
-                                    last_probe = now;
-                                }
-                                Ok(())
-                            });
                             if let Err(err) = result {
                                 writer_runtime.log(format!("[副电脑] 发送控制消息失败：{err:#}\n"));
                                 break;

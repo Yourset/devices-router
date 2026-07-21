@@ -12,6 +12,9 @@ use crate::protocol::{
 };
 use crate::routing::{ActivityArbiter, KeyboardTarget};
 use crate::sessions::{RegisterResult, SessionIdentity, MAX_REMOTE_DEVICES};
+use crate::transport::{
+    background_send_due, background_send_wait, configure_control_stream, BackgroundSendDue,
+};
 use crate::updates::start_update_server;
 use anyhow::{Context, Result};
 use std::io::{BufRead, BufReader, Write};
@@ -22,8 +25,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const TCP_PORT: u16 = 8765;
-const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(300);
-const LATENCY_PROBE_INTERVAL: Duration = Duration::from_millis(500);
 const LOOP_INTERVAL: Duration = Duration::from_millis(5);
 const EMERGENCY_ACTIVITY_BLOCK: Duration = Duration::from_secs(1);
 
@@ -218,6 +219,7 @@ fn handle_host_connection(
     address: SocketAddr,
     event_tx: mpsc::Sender<HostEvent>,
 ) -> Result<()> {
+    configure_control_stream(&stream).context("configure host control stream")?;
     stream
         .set_nonblocking(false)
         .context("set client stream blocking")?;
@@ -315,35 +317,53 @@ fn handle_host_connection(
     thread::Builder::new()
         .name(format!("devices-router-host-writer-{device_id}"))
         .spawn(move || {
+            let mut last_outbound = Instant::now();
             let mut last_probe = Instant::now();
             loop {
-                let event = match outbound_rx.recv_timeout(HEARTBEAT_INTERVAL) {
-                    Ok(event) => event,
-                    Err(RecvTimeoutError::Timeout) => BridgeEvent::Ping {
-                        message: "host-heartbeat".to_string(),
-                        probe_id: None,
-                        reply_to: None,
-                    },
+                let timeout = background_send_wait(last_outbound, last_probe, Instant::now());
+                let result = match outbound_rx.recv_timeout(timeout) {
+                    Ok(event) => encode_event(&event).and_then(|bytes| {
+                        writer.write_all(&bytes)?;
+                        last_outbound = Instant::now();
+                        Ok(())
+                    }),
+                    Err(RecvTimeoutError::Timeout) => {
+                        match background_send_due(last_outbound, last_probe, Instant::now()) {
+                            Some(BackgroundSendDue::Heartbeat) => {
+                                let heartbeat = BridgeEvent::Ping {
+                                    message: "host-heartbeat".to_string(),
+                                    probe_id: None,
+                                    reply_to: None,
+                                };
+                                encode_event(&heartbeat).and_then(|bytes| {
+                                    writer.write_all(&bytes)?;
+                                    last_outbound = Instant::now();
+                                    Ok(())
+                                })
+                            }
+                            Some(BackgroundSendDue::Probe) => {
+                                let now = Instant::now();
+                                let probe_id = writer_latency_tracker
+                                    .lock()
+                                    .expect("latency tracker lock poisoned")
+                                    .start_probe(now);
+                                let probe = BridgeEvent::Ping {
+                                    message: "latency-probe".to_string(),
+                                    probe_id: Some(probe_id),
+                                    reply_to: None,
+                                };
+                                encode_event(&probe).and_then(|bytes| {
+                                    writer.write_all(&bytes)?;
+                                    last_outbound = now;
+                                    last_probe = now;
+                                    Ok(())
+                                })
+                            }
+                            None => Ok(()),
+                        }
+                    }
                     Err(RecvTimeoutError::Disconnected) => break,
                 };
-                let result = encode_event(&event).and_then(|bytes| {
-                    writer.write_all(&bytes)?;
-                    if last_probe.elapsed() >= LATENCY_PROBE_INTERVAL {
-                        let now = Instant::now();
-                        let probe_id = writer_latency_tracker
-                            .lock()
-                            .expect("latency tracker lock poisoned")
-                            .start_probe(now);
-                        let probe = BridgeEvent::Ping {
-                            message: "latency-probe".to_string(),
-                            probe_id: Some(probe_id),
-                            reply_to: None,
-                        };
-                        writer.write_all(&encode_event(&probe)?)?;
-                        last_probe = now;
-                    }
-                    Ok(())
-                });
                 if let Err(err) = result {
                     let _ = writer_events.send(HostEvent::Disconnected {
                         device_id: writer_device_id.clone(),

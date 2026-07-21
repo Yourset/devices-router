@@ -13,6 +13,7 @@ mod protocol;
 mod routing;
 mod sessions;
 mod startup;
+mod transport;
 mod tray;
 mod updates;
 
