@@ -74,6 +74,9 @@ pub enum BridgeEvent {
         )]
         target_epoch: Option<u64>,
     },
+    ActivityChannelState {
+        active: bool,
+    },
     Key {
         action: KeyAction,
         key: String,
@@ -91,11 +94,7 @@ pub enum BridgeEvent {
             skip_serializing_if = "Option::is_none"
         )]
         median_rtt_ms: Option<u64>,
-        #[serde(
-            default,
-            rename = "jitterMs",
-            skip_serializing_if = "Option::is_none"
-        )]
+        #[serde(default, rename = "jitterMs", skip_serializing_if = "Option::is_none")]
         jitter_ms: Option<u64>,
         #[serde(
             default,
@@ -350,6 +349,18 @@ mod tests {
     }
 
     #[test]
+    fn activity_channel_state_round_trips() {
+        let event = BridgeEvent::ActivityChannelState { active: true };
+
+        let payload = encode_event(&event).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(payload.trim_ascii_end()).unwrap();
+
+        assert_eq!(json["type"], "activity_channel_state");
+        assert_eq!(json["active"], true);
+        assert_eq!(decode_event(&payload).unwrap(), event);
+    }
+
+    #[test]
     fn mouse_input_round_trips() {
         let event = BridgeEvent::MouseInput {
             event: MouseInputEvent::Button {
@@ -533,6 +544,9 @@ mod tests {
         assert_eq!(hello_json["activityToken"], "token-123");
         assert_eq!(activity_json["activityId"], 42);
         assert_eq!(decode_activity_datagram(&hello_payload).unwrap(), hello);
-        assert_eq!(decode_activity_datagram(&activity_payload).unwrap(), activity);
+        assert_eq!(
+            decode_activity_datagram(&activity_payload).unwrap(),
+            activity
+        );
     }
 }

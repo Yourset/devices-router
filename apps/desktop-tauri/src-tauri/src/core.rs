@@ -1,5 +1,9 @@
 #![allow(dead_code)]
 
+use crate::activity_transport::{
+    queue_remote_mouse_activity, spawn_remote_activity_sender, RemoteActivitySender,
+    UDP_ACTIVITY_CAPABILITY,
+};
 use crate::app_state::{AppMode, AppRuntime, KeyboardTarget};
 use crate::config::AppConfig;
 use crate::discovery::{broadcast_host, discover_host, scan_local_network};
@@ -695,15 +699,32 @@ fn start_remote(runtime: Arc<AppRuntime>) -> Result<()> {
     Ok(())
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum RemoteHandshake {
-    Accepted,
+    Accepted {
+        activity_capable: bool,
+        activity_token: Option<String>,
+        activity_port: Option<u16>,
+    },
     LegacyHost,
 }
 
 fn classify_remote_handshake(event: BridgeEvent) -> Result<RemoteHandshake> {
     match event {
-        BridgeEvent::ServerHello { accepted: true, .. } => Ok(RemoteHandshake::Accepted),
+        BridgeEvent::ServerHello {
+            accepted: true,
+            capabilities,
+            activity_token,
+            activity_port,
+            ..
+        } => {
+            let activity_capable = capabilities.iter().any(|value| value == "udp_activity_v1");
+            Ok(RemoteHandshake::Accepted {
+                activity_capable,
+                activity_token: activity_capable.then_some(activity_token).flatten(),
+                activity_port: activity_capable.then_some(activity_port).flatten(),
+            })
+        }
         BridgeEvent::ServerHello {
             accepted: false,
             reason,
@@ -753,10 +774,13 @@ fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
         match TcpStream::connect(target.as_str()) {
             Ok(mut stream) => {
                 if let Err(err) = configure_control_stream(&stream) {
-                    runtime.log(format!("[remote] failed to configure low-latency stream: {err}\n"));
+                    runtime.log(format!(
+                        "[remote] failed to configure low-latency stream: {err}\n"
+                    ));
                     thread::sleep(Duration::from_secs(2));
                     continue;
                 }
+                let (event_tx, event_rx) = mpsc::channel::<BridgeEvent>();
                 let config = runtime.config();
                 stream.write_all(&encode_event(&BridgeEvent::ClientHello {
                     role: ClientRole::Remote,
@@ -765,14 +789,49 @@ fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
                     capabilities: vec![
                         "multi_remote_v1".to_string(),
                         "server_hello_v1".to_string(),
+                        UDP_ACTIVITY_CAPABILITY.to_string(),
                     ],
                 })?)?;
-                match read_remote_handshake(&mut stream) {
-                    Ok(RemoteHandshake::Accepted) => {
-                        runtime.log(format!("[remote] connected to host: {target}\n"))
+                let activity_sender = match read_remote_handshake(&mut stream) {
+                    Ok(RemoteHandshake::Accepted {
+                        activity_capable,
+                        activity_token,
+                        activity_port,
+                    }) => {
+                        runtime.log(format!("[remote] connected to host: {target}\n"));
+                        if activity_capable {
+                            match (
+                                stream.peer_addr().ok().map(|address| address.ip()),
+                                activity_token,
+                                activity_port,
+                            ) {
+                                (Some(host_ip), Some(activity_token), Some(activity_port)) => {
+                                    match spawn_remote_activity_sender(
+                                        Arc::clone(&runtime),
+                                        host_ip,
+                                        runtime.config().device_id.clone(),
+                                        activity_token,
+                                        activity_port,
+                                        event_tx.clone(),
+                                    ) {
+                                        Ok(sender) => Some(sender),
+                                        Err(err) => {
+                                            runtime.log(format!(
+                                                "[remote] udp activity setup failed, staying on tcp: {err:#}\n"
+                                            ));
+                                            None
+                                        }
+                                    }
+                                }
+                                _ => None,
+                            }
+                        } else {
+                            None
+                        }
                     }
                     Ok(RemoteHandshake::LegacyHost) => {
-                        runtime.log(format!("[remote] connected to legacy host: {target}\n"))
+                        runtime.log(format!("[remote] connected to legacy host: {target}\n"));
+                        None
                     }
                     Err(err) => {
                         runtime.set_connected(false);
@@ -782,7 +841,7 @@ fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
                         thread::sleep(Duration::from_secs(2));
                         continue;
                     }
-                }
+                };
                 runtime.set_connected(true);
                 if let Ok(address) = stream.peer_addr() {
                     if let Some(host) = host_from_socket_addr(&address) {
@@ -796,7 +855,6 @@ fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
                 let mut writer = stream
                     .try_clone()
                     .context("clone remote stream for writer")?;
-                let (event_tx, event_rx) = mpsc::channel::<BridgeEvent>();
                 let sender_generation = runtime.set_remote_sender(event_tx.clone());
                 let writer_runtime = Arc::clone(&runtime);
                 let latency_tracker = Arc::new(Mutex::new(LatencyProbeTracker::default()));
@@ -807,11 +865,8 @@ fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
                         let mut last_outbound = Instant::now();
                         let mut last_probe = Instant::now();
                         loop {
-                            let timeout = background_send_wait(
-                                last_outbound,
-                                last_probe,
-                                Instant::now(),
-                            );
+                            let timeout =
+                                background_send_wait(last_outbound, last_probe, Instant::now());
                             let result = match event_rx.recv_timeout(timeout) {
                                 Ok(event) => encode_event(&event).and_then(|bytes| {
                                     writer.write_all(&bytes)?;
@@ -891,9 +946,18 @@ fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
                     .context("spawn remote writer loop")?;
                 if MOUSE_ACTIVITY_FOLLOW_AVAILABLE {
                     let mouse_runtime = Arc::clone(&runtime);
+                    let mouse_event_tx = event_tx.clone();
+                    let mouse_activity_sender = activity_sender.clone();
                     thread::Builder::new()
                         .name("devices-router-remote-mouse".to_string())
-                        .spawn(move || run_remote_mouse_loop(mouse_runtime, event_tx))
+                        .spawn(move || {
+                            run_remote_mouse_loop(
+                                mouse_runtime,
+                                mouse_event_tx,
+                                mouse_activity_sender,
+                                sender_generation,
+                            )
+                        })
                         .context("spawn remote mouse loop")?;
                 }
                 let mut reader = BufReader::new(stream);
@@ -917,14 +981,17 @@ fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
                                     ));
                                 }
                             }
-                            Ok(BridgeEvent::TargetState { target, .. }) => {
+                            Ok(BridgeEvent::TargetState {
+                                target,
+                                target_epoch,
+                            }) => {
                                 let target = match target {
                                     TargetSide::Local => KeyboardTarget::Local,
                                     TargetSide::Remote => {
                                         KeyboardTarget::Device(runtime.config().device_id)
                                     }
                                 };
-                                runtime.set_target(target.clone());
+                                runtime.apply_remote_target_state(target.clone(), target_epoch);
                                 let label = match target {
                                     KeyboardTarget::Local => "\u{4e3b}\u{7535}\u{8111}",
                                     KeyboardTarget::Remote | KeyboardTarget::Device(_) => {
@@ -932,6 +999,11 @@ fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
                                     }
                                 };
                                 runtime.log(format!("[副电脑] 主电脑确认键盘目标：{label}\n"));
+                            }
+                            Ok(BridgeEvent::ActivityChannelState { active }) => {
+                                if let Some(sender) = &activity_sender {
+                                    let _ = sender.set_ready(active);
+                                }
                             }
                             Ok(BridgeEvent::MouseInput { event }) => {
                                 let config = runtime.config();
@@ -1091,13 +1163,19 @@ fn resolve_remote_target(runtime: &Arc<AppRuntime>) -> Option<String> {
     }
 }
 
-fn run_remote_mouse_loop(runtime: Arc<AppRuntime>, event_tx: mpsc::Sender<BridgeEvent>) {
+fn run_remote_mouse_loop(
+    runtime: Arc<AppRuntime>,
+    event_tx: mpsc::Sender<BridgeEvent>,
+    activity_sender: Option<RemoteActivitySender>,
+    sender_generation: u64,
+) {
     let Ok(mut last) = cursor_position() else {
         runtime.log("[副电脑] 鼠标监听不可用\n");
         return;
     };
     let mut activity_logs = 0_u8;
-    while !runtime.should_stop() {
+    let mut next_activity_id = 0_u64;
+    while !runtime.should_stop() && runtime.remote_sender_generation_matches(sender_generation) {
         let config = runtime.config();
         thread::sleep(Duration::from_millis(
             config.mouse_follow.remote_report_interval_ms,
@@ -1114,12 +1192,14 @@ fn run_remote_mouse_loop(runtime: Arc<AppRuntime>, event_tx: mpsc::Sender<Bridge
             continue;
         }
         last = current;
-        let event = BridgeEvent::MouseActivity {
-            source: MouseSource::Remote,
-            activity_id: None,
-            target_epoch: None,
-        };
-        if event_tx.send(event).is_err() {
+        next_activity_id = next_activity_id.wrapping_add(1).max(1);
+        if !queue_remote_mouse_activity(
+            activity_sender.as_ref(),
+            &event_tx,
+            next_activity_id,
+            runtime.observed_host_target_epoch(),
+            runtime.target().is_remote(),
+        ) {
             runtime.log("[副电脑] 鼠标活动上报已停止，等待重新连接\n");
             return;
         }
@@ -1354,12 +1434,16 @@ mod tests {
                 accepted: true,
                 reason: None,
                 max_devices: 2,
-                capabilities: Vec::new(),
-                activity_token: None,
-                activity_port: None,
+                capabilities: vec!["udp_activity_v1".to_string()],
+                activity_token: Some("token-123".to_string()),
+                activity_port: Some(8766),
             })
             .unwrap(),
-            RemoteHandshake::Accepted
+            RemoteHandshake::Accepted {
+                activity_capable: true,
+                activity_token: Some("token-123".to_string()),
+                activity_port: Some(8766),
+            }
         );
         assert_eq!(
             classify_remote_handshake(BridgeEvent::Ping {
@@ -1384,6 +1468,26 @@ mod tests {
         })
         .unwrap_err();
         assert!(error.to_string().contains("two device limit"));
+    }
+
+    #[test]
+    fn remote_handshake_does_not_claim_udp_without_capability() {
+        assert_eq!(
+            classify_remote_handshake(BridgeEvent::ServerHello {
+                accepted: true,
+                reason: None,
+                max_devices: 2,
+                capabilities: Vec::new(),
+                activity_token: Some("token-123".to_string()),
+                activity_port: Some(8766),
+            })
+            .unwrap(),
+            RemoteHandshake::Accepted {
+                activity_capable: false,
+                activity_token: None,
+                activity_port: None,
+            }
+        );
     }
 
     #[test]

@@ -79,6 +79,8 @@ struct InnerState {
     mode: AppMode,
     connected: bool,
     target: KeyboardTarget,
+    host_target_epoch: u64,
+    observed_host_target_epoch: Option<u64>,
     logs: VecDeque<String>,
     config: AppConfig,
     remote_sender: Option<mpsc::Sender<BridgeEvent>>,
@@ -98,6 +100,8 @@ impl SharedState {
                     mode: AppMode::Idle,
                     connected: false,
                     target: KeyboardTarget::Local,
+                    host_target_epoch: 1,
+                    observed_host_target_epoch: None,
                     logs: VecDeque::new(),
                     config: AppConfig::load(),
                     remote_sender: None,
@@ -122,6 +126,8 @@ impl SharedState {
         inner.mode = AppMode::Idle;
         inner.connected = false;
         inner.target = KeyboardTarget::Local;
+        inner.host_target_epoch = 1;
+        inner.observed_host_target_epoch = None;
         inner.remote_sender = None;
         inner.remote_sender_generation = inner.remote_sender_generation.wrapping_add(1);
         inner.sessions.clear();
@@ -179,6 +185,8 @@ impl AppRuntime {
         inner.mode = mode;
         inner.connected = false;
         inner.target = KeyboardTarget::Local;
+        inner.host_target_epoch = 1;
+        inner.observed_host_target_epoch = None;
         inner.remote_sender = None;
         inner.remote_sender_generation = inner.remote_sender_generation.wrapping_add(1);
         inner.config.last_mode = mode.as_str().to_string();
@@ -224,9 +232,41 @@ impl AppRuntime {
         inner.target = target;
     }
 
+    pub fn set_host_target(&self, target: KeyboardTarget) -> bool {
+        let mut inner = self.state.lock().expect("state lock poisoned");
+        if inner.target == target {
+            return false;
+        }
+        inner.target = target;
+        inner.host_target_epoch = inner.host_target_epoch.wrapping_add(1).max(1);
+        true
+    }
+
+    pub fn apply_remote_target_state(
+        &self,
+        target: KeyboardTarget,
+        host_target_epoch: Option<u64>,
+    ) {
+        let mut inner = self.state.lock().expect("state lock poisoned");
+        inner.target = target;
+        if let Some(epoch) = host_target_epoch {
+            inner.observed_host_target_epoch = Some(epoch);
+        }
+    }
+
     pub fn target(&self) -> KeyboardTarget {
         let inner = self.state.lock().expect("state lock poisoned");
         inner.target.clone()
+    }
+
+    pub fn host_target_epoch(&self) -> u64 {
+        let inner = self.state.lock().expect("state lock poisoned");
+        inner.host_target_epoch
+    }
+
+    pub fn observed_host_target_epoch(&self) -> Option<u64> {
+        let inner = self.state.lock().expect("state lock poisoned");
+        inner.observed_host_target_epoch
     }
 
     pub fn log(&self, line: impl Into<String>) {
@@ -246,6 +286,55 @@ impl AppRuntime {
     ) -> RegisterResult {
         let mut inner = self.state.lock().expect("state lock poisoned");
         inner.sessions.register(identity, sender)
+    }
+
+    pub fn register_session_with_activity_support(
+        &self,
+        identity: SessionIdentity,
+        sender: mpsc::Sender<BridgeEvent>,
+        activity_capable: bool,
+    ) -> RegisterResult {
+        let mut inner = self.state.lock().expect("state lock poisoned");
+        inner
+            .sessions
+            .register_with_activity_support(identity, sender, activity_capable)
+    }
+
+    pub fn validate_session_activity_hello(
+        &self,
+        device_id: &str,
+        activity_token: &str,
+        source_ip: &str,
+    ) -> Option<u64> {
+        let mut inner = self.state.lock().expect("state lock poisoned");
+        inner
+            .sessions
+            .validate_activity_hello(device_id, activity_token, source_ip)
+    }
+
+    pub fn validate_session_activity(
+        &self,
+        device_id: &str,
+        activity_token: &str,
+        source_ip: &str,
+        activity_id: u64,
+    ) -> Option<u64> {
+        let mut inner = self.state.lock().expect("state lock poisoned");
+        inner
+            .sessions
+            .validate_activity(device_id, activity_token, source_ip, activity_id)
+    }
+
+    pub fn validate_tcp_activity(
+        &self,
+        device_id: &str,
+        generation: u64,
+        activity_id: u64,
+    ) -> bool {
+        let mut inner = self.state.lock().expect("state lock poisoned");
+        inner
+            .sessions
+            .validate_tcp_activity(device_id, generation, activity_id)
     }
 
     pub fn remove_session(&self, device_id: &str, generation: u64) -> bool {
@@ -325,6 +414,11 @@ impl AppRuntime {
         if inner.remote_sender_generation == generation {
             inner.remote_sender = None;
         }
+    }
+
+    pub fn remote_sender_generation_matches(&self, generation: u64) -> bool {
+        let inner = self.state.lock().expect("state lock poisoned");
+        inner.remote_sender.is_some() && inner.remote_sender_generation == generation
     }
 
     pub fn send_remote_event(&self, event: BridgeEvent) -> bool {
@@ -458,5 +552,59 @@ mod tests {
 
         runtime.set_connected(false);
         assert_eq!(state.snapshot().host_latency_ms, None);
+    }
+
+    #[test]
+    fn remote_sender_generation_invalidates_connection_workers_on_clear_or_replace() {
+        let state = SharedState::new("test");
+        let runtime = state.runtime();
+        let (first_tx, _) = mpsc::channel();
+        let first = runtime.set_remote_sender(first_tx);
+
+        assert!(runtime.remote_sender_generation_matches(first));
+        runtime.clear_remote_sender(first);
+        assert!(!runtime.remote_sender_generation_matches(first));
+
+        let (second_tx, _) = mpsc::channel();
+        let second = runtime.set_remote_sender(second_tx);
+        assert!(!runtime.remote_sender_generation_matches(first));
+        assert!(runtime.remote_sender_generation_matches(second));
+    }
+
+    #[test]
+    fn host_target_epoch_starts_at_one_and_increments_only_on_actual_change() {
+        let state = SharedState::new("test");
+        let runtime = state.runtime();
+        runtime.start(AppMode::Host);
+
+        assert_eq!(runtime.host_target_epoch(), 1);
+        assert!(!runtime.set_host_target(KeyboardTarget::Local));
+        assert_eq!(runtime.host_target_epoch(), 1);
+        assert!(runtime.set_host_target(KeyboardTarget::Device("device-a".to_string())));
+        assert_eq!(runtime.host_target_epoch(), 2);
+        assert!(!runtime.set_host_target(KeyboardTarget::Device("device-a".to_string())));
+        assert_eq!(runtime.host_target_epoch(), 2);
+        assert!(runtime.set_host_target(KeyboardTarget::Local));
+        assert_eq!(runtime.host_target_epoch(), 3);
+    }
+
+    #[test]
+    fn remote_target_state_updates_target_and_tracks_host_epoch_without_incrementing() {
+        let state = SharedState::new("test");
+        let runtime = state.runtime();
+        runtime.start(AppMode::Remote);
+
+        runtime.apply_remote_target_state(KeyboardTarget::Device("device-a".to_string()), Some(7));
+
+        assert_eq!(
+            runtime.target(),
+            KeyboardTarget::Device("device-a".to_string())
+        );
+        assert_eq!(runtime.observed_host_target_epoch(), Some(7));
+        assert_eq!(runtime.host_target_epoch(), 1);
+
+        runtime.apply_remote_target_state(KeyboardTarget::Local, None);
+        assert_eq!(runtime.target(), KeyboardTarget::Local);
+        assert_eq!(runtime.observed_host_target_epoch(), Some(7));
     }
 }

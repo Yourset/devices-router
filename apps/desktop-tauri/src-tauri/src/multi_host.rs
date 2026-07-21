@@ -1,3 +1,6 @@
+use crate::activity_transport::{
+    spawn_host_activity_listener, ActivityDatagramOutcome, UDP_ACTIVITY_CAPABILITY,
+};
 use crate::app_state::AppRuntime;
 use crate::discovery::broadcast_host;
 use crate::input::release_local_modifiers;
@@ -26,6 +29,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const TCP_PORT: u16 = 8765;
+const ACTIVITY_PORT: u16 = 8766;
 const LOOP_INTERVAL: Duration = Duration::from_millis(5);
 const EMERGENCY_ACTIVITY_BLOCK: Duration = Duration::from_secs(1);
 
@@ -82,6 +86,34 @@ pub(crate) fn run(runtime: Arc<AppRuntime>) -> Result<()> {
 
     let (host_event_tx, host_event_rx) = mpsc::channel::<HostEvent>();
     spawn_host_mouse_activity(runtime.clone(), host_event_tx.clone())?;
+    let activity_runtime = runtime.clone();
+    let activity_event_tx = host_event_tx.clone();
+    if let Err(err) =
+        spawn_host_activity_listener(activity_runtime.clone(), move |outcome| match outcome {
+            ActivityDatagramOutcome::HelloAccepted {
+                device_id,
+                generation: _,
+            } => {
+                if let Some(sender) = activity_runtime.session_sender(&device_id) {
+                    let _ = sender.send(BridgeEvent::ActivityChannelState { active: true });
+                }
+            }
+            ActivityDatagramOutcome::ActivityAccepted {
+                device_id,
+                generation,
+                ..
+            } => {
+                let _ = activity_event_tx.send(HostEvent::RemoteActivity {
+                    device_id,
+                    generation,
+                });
+            }
+        })
+    {
+        runtime.log(format!(
+            "[host] udp activity listener unavailable: {err:#}\n"
+        ));
+    }
 
     let listener = TcpListener::bind(("0.0.0.0", TCP_PORT)).context("bind host TCP listener")?;
     listener
@@ -256,14 +288,29 @@ fn handle_host_connection(
 
     stream.set_read_timeout(None)?;
     let (outbound_tx, outbound_rx) = mpsc::channel::<BridgeEvent>();
-    let registration = runtime.register_session(
-        SessionIdentity {
-            device_id,
-            device_name,
-            address: address.to_string(),
-        },
-        outbound_tx.clone(),
-    );
+    let supports_udp_activity = capabilities
+        .iter()
+        .any(|value| value == UDP_ACTIVITY_CAPABILITY);
+    let registration = if supports_udp_activity {
+        runtime.register_session_with_activity_support(
+            SessionIdentity {
+                device_id,
+                device_name,
+                address: address.to_string(),
+            },
+            outbound_tx.clone(),
+            true,
+        )
+    } else {
+        runtime.register_session(
+            SessionIdentity {
+                device_id,
+                device_name,
+                address: address.to_string(),
+            },
+            outbound_tx.clone(),
+        )
+    };
     let acceptance = match registration {
         RegisterResult::Accepted(acceptance) => acceptance,
         RegisterResult::Rejected(reason) => {
@@ -282,13 +329,18 @@ fn handle_host_connection(
         }
     };
     let handshake_response = if supports_server_hello {
+        let activity_capabilities = if supports_udp_activity {
+            vec![UDP_ACTIVITY_CAPABILITY.to_string()]
+        } else {
+            Vec::new()
+        };
         BridgeEvent::ServerHello {
             accepted: true,
             reason: None,
             max_devices: MAX_REMOTE_DEVICES as u8,
-            capabilities: Vec::new(),
-            activity_token: None,
-            activity_port: None,
+            capabilities: activity_capabilities,
+            activity_token: acceptance.activity_token.clone(),
+            activity_port: supports_udp_activity.then_some(ACTIVITY_PORT),
         }
     } else {
         BridgeEvent::Ping {
@@ -309,6 +361,7 @@ fn handle_host_connection(
             ""
         }
     ));
+    send_target_state_to_device(&runtime, &device_id);
 
     let mut writer = stream.try_clone().context("clone host writer stream")?;
     let writer_events = event_tx.clone();
@@ -402,15 +455,20 @@ fn handle_host_connection(
         match reader.read_line(&mut line) {
             Ok(0) => break,
             Ok(_) => match decode_event(line.as_bytes()) {
-                Ok(BridgeEvent::MouseActivity { .. }) => {
-                    if event_tx
-                        .send(HostEvent::RemoteActivity {
-                            device_id: device_id.clone(),
-                            generation,
-                        })
-                        .is_err()
-                    {
-                        break;
+                Ok(BridgeEvent::MouseActivity {
+                    activity_id,
+                    target_epoch,
+                    ..
+                }) => {
+                    if !handle_tcp_mouse_activity(
+                        &runtime,
+                        &event_tx,
+                        &device_id,
+                        generation,
+                        activity_id,
+                        target_epoch,
+                    ) {
+                        continue;
                     }
                 }
                 Ok(BridgeEvent::TargetRequest { target }) => {
@@ -629,7 +687,7 @@ pub(crate) fn switch_target(
             ));
         }
     }
-    runtime.set_target(target.clone());
+    runtime.set_host_target(target.clone());
     if target == KeyboardTarget::Local {
         runtime.mark_local_release();
     }
@@ -645,9 +703,48 @@ fn broadcast_target_states(runtime: &Arc<AppRuntime>) {
     for (device_id, sender) in runtime.session_senders() {
         let _ = sender.send(BridgeEvent::TargetState {
             target: target_state_for_device(&target, &device_id),
-            target_epoch: None,
+            target_epoch: Some(runtime.host_target_epoch()),
         });
     }
+}
+
+fn send_target_state_to_device(runtime: &Arc<AppRuntime>, device_id: &str) {
+    let target = runtime.target();
+    let Some(sender) = runtime.session_sender(device_id) else {
+        return;
+    };
+    let _ = sender.send(BridgeEvent::TargetState {
+        target: target_state_for_device(&target, device_id),
+        target_epoch: Some(runtime.host_target_epoch()),
+    });
+}
+
+fn handle_tcp_mouse_activity(
+    runtime: &Arc<AppRuntime>,
+    event_tx: &mpsc::Sender<HostEvent>,
+    device_id: &str,
+    generation: u64,
+    activity_id: Option<u64>,
+    target_epoch: Option<u64>,
+) -> bool {
+    if let (Some(activity_id), Some(target_epoch)) = (activity_id, target_epoch) {
+        if !runtime.session_generation_matches(device_id, generation) {
+            return false;
+        }
+        if target_epoch != runtime.host_target_epoch() {
+            send_target_state_to_device(runtime, device_id);
+            return false;
+        }
+        if !runtime.validate_tcp_activity(device_id, generation, activity_id) {
+            return false;
+        }
+    }
+    event_tx
+        .send(HostEvent::RemoteActivity {
+            device_id: device_id.to_string(),
+            generation,
+        })
+        .is_ok()
 }
 
 fn target_state_for_device(target: &KeyboardTarget, device_id: &str) -> TargetSide {
@@ -718,6 +815,7 @@ mod tests {
                     capabilities: vec![
                         "multi_remote_v1".to_string(),
                         "server_hello_v1".to_string(),
+                        "udp_activity_v1".to_string(),
                     ],
                 })
                 .unwrap(),
@@ -919,5 +1017,158 @@ mod tests {
         let current = KeyboardTarget::Device("device-b".to_string());
 
         assert_eq!(target_after_disconnect(&current, "device-a"), current);
+    }
+
+    #[test]
+    fn accepted_server_hello_advertises_udp_activity_metadata() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let state = crate::app_state::SharedState::new("test");
+        let runtime = state.runtime();
+        let (event_tx, _event_rx) = mpsc::channel();
+        let handler = thread::spawn(move || {
+            let (stream, peer) = listener.accept().unwrap();
+            handle_host_connection(runtime, stream, peer, event_tx).unwrap();
+        });
+
+        let (stream, hello) = connect_test_client(address, "device-a");
+
+        assert!(matches!(
+            hello,
+            BridgeEvent::ServerHello {
+                accepted: true,
+                max_devices: 2,
+                capabilities,
+                activity_token: Some(_),
+                activity_port: Some(8766),
+                ..
+            } if capabilities == vec![UDP_ACTIVITY_CAPABILITY.to_string()]
+        ));
+
+        drop(stream);
+        handler.join().unwrap();
+    }
+
+    #[test]
+    fn target_state_broadcast_includes_current_host_epoch() {
+        let state = crate::app_state::SharedState::new("test");
+        let runtime = state.runtime();
+        runtime.start(crate::app_state::AppMode::Host);
+        let (sender, receiver) = mpsc::channel();
+        let accepted = runtime
+            .register_session(
+                crate::sessions::SessionIdentity {
+                    device_id: Some("device-a".to_string()),
+                    device_name: Some("Windows-A".to_string()),
+                    address: "10.0.0.1:8765".to_string(),
+                },
+                sender,
+            )
+            .accepted()
+            .unwrap();
+
+        let changed = switch_target(
+            &runtime,
+            KeyboardTarget::Device(accepted.device_id.clone()),
+            "test\n",
+        );
+        assert!(changed);
+
+        let target_state = receiver
+            .try_iter()
+            .find(|event| matches!(event, BridgeEvent::TargetState { .. }))
+            .expect("target state should be broadcast");
+        assert_eq!(
+            target_state,
+            BridgeEvent::TargetState {
+                target: TargetSide::Remote,
+                target_epoch: Some(2),
+            }
+        );
+    }
+
+    #[test]
+    fn stale_tcp_activity_is_ignored_and_current_target_state_is_resent() {
+        let state = crate::app_state::SharedState::new("test");
+        let runtime = state.runtime();
+        runtime.start(crate::app_state::AppMode::Host);
+        let (sender, receiver) = mpsc::channel();
+        let accepted = runtime
+            .register_session(
+                crate::sessions::SessionIdentity {
+                    device_id: Some("device-a".to_string()),
+                    device_name: Some("Windows-A".to_string()),
+                    address: "10.0.0.1:8765".to_string(),
+                },
+                sender,
+            )
+            .accepted()
+            .unwrap();
+        runtime.set_host_target(KeyboardTarget::Device(accepted.device_id.clone()));
+        runtime.set_host_target(KeyboardTarget::Local);
+        let (host_event_tx, host_event_rx) = mpsc::channel();
+
+        assert!(!handle_tcp_mouse_activity(
+            &runtime,
+            &host_event_tx,
+            &accepted.device_id,
+            accepted.generation,
+            Some(1),
+            Some(2),
+        ));
+        assert!(host_event_rx.try_recv().is_err());
+        assert_eq!(
+            receiver
+                .try_iter()
+                .filter(|event| matches!(event, BridgeEvent::TargetState { .. }))
+                .last(),
+            Some(BridgeEvent::TargetState {
+                target: TargetSide::Local,
+                target_epoch: Some(3),
+            })
+        );
+    }
+
+    #[test]
+    fn tcp_activity_with_current_epoch_and_id_is_forwarded_once() {
+        let state = crate::app_state::SharedState::new("test");
+        let runtime = state.runtime();
+        runtime.start(crate::app_state::AppMode::Host);
+        let (sender, _receiver) = mpsc::channel();
+        let accepted = runtime
+            .register_session_with_activity_support(
+                crate::sessions::SessionIdentity {
+                    device_id: Some("device-a".to_string()),
+                    device_name: Some("Windows-A".to_string()),
+                    address: "10.0.0.1:8765".to_string(),
+                },
+                sender,
+                true,
+            )
+            .accepted()
+            .unwrap();
+        let (host_event_tx, host_event_rx) = mpsc::channel();
+
+        assert!(handle_tcp_mouse_activity(
+            &runtime,
+            &host_event_tx,
+            &accepted.device_id,
+            accepted.generation,
+            Some(1),
+            Some(1),
+        ));
+        assert!(matches!(
+            host_event_rx.try_recv().unwrap(),
+            HostEvent::RemoteActivity { device_id, generation }
+                if device_id == "device-a" && generation == accepted.generation
+        ));
+        assert!(!handle_tcp_mouse_activity(
+            &runtime,
+            &host_event_tx,
+            &accepted.device_id,
+            accepted.generation,
+            Some(1),
+            Some(1),
+        ));
     }
 }

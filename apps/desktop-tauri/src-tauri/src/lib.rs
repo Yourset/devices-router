@@ -1,3 +1,4 @@
+mod activity_transport;
 mod app_state;
 mod config;
 mod core;
