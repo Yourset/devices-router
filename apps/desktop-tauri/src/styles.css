@@ -335,3 +335,66 @@ dd {
     padding: 14px;
   }
 }
+
+.device-panel {
+  padding: 12px;
+}
+
+.device-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 7px;
+}
+
+.device-card {
+  border: 1px solid #d7deea;
+  border-radius: 7px;
+  padding: 9px 10px;
+  background: #f8fafc;
+  min-width: 0;
+}
+
+.device-card.active {
+  border-color: #2563eb;
+  background: #eff6ff;
+}
+
+.device-card.empty {
+  color: #68758a;
+  background: #f4f6f9;
+}
+
+.device-card-title {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.device-card-title span,
+.device-card p {
+  color: #5a6678;
+  font-size: 12px;
+}
+
+.device-card p {
+  margin: 0 0 6px;
+}
+
+.device-alias-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.device-alias-row input {
+  min-width: 0;
+  width: 100%;
+  padding: 6px 8px;
+}
+
+.device-card button {
+  padding: 5px 8px;
+  font-size: 12px;
+}

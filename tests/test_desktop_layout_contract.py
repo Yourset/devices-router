@@ -76,3 +76,25 @@ def test_overview_uses_independent_columns_to_avoid_grid_row_gaps():
     assert '<section class="workspace overview-workspace">' in source
     assert source.count('<div class="panel-stack">') >= 2
     assert re.search(r"\.panel-stack\s*\{[^{}]*display\s*:\s*grid", css, re.DOTALL)
+
+
+def test_multi_device_ui_uses_device_ids_and_alias_command():
+    source = (DESKTOP / "src" / "main.ts").read_text(encoding="utf-8")
+
+    assert "type KeyboardTarget = string;" in source
+    assert "localDeviceName: string;" in source
+    assert "activeDeviceId: string | null;" in source
+    assert "devices: DeviceStatus[];" in source
+    assert 'invoke("set_device_alias"' in source
+    assert 'data-device-id=' in source
+    assert 'id="target-remote"' not in source
+
+
+def test_multi_device_ui_keeps_two_remote_slots_in_fixed_layout():
+    source = (DESKTOP / "src" / "main.ts").read_text(encoding="utf-8")
+    css = (DESKTOP / "src" / "styles.css").read_text(encoding="utf-8")
+
+    assert "MAX_REMOTE_DEVICES = 2" in source
+    assert "renderRemoteDevices" in source
+    assert re.search(r"\.device-grid\s*\{[^{}]*display\s*:\s*grid", css, re.DOTALL)
+    assert "overflow: auto" not in re.sub(r"\.log-panel textarea\s*\{[^{}]*\}", "", css, flags=re.DOTALL)

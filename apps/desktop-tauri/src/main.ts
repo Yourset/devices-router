@@ -3,10 +3,19 @@ import "./styles.css";
 
 type Tab = "overview" | "mouse" | "network" | "update" | "settings";
 type AppMode = "idle" | "host" | "remote";
-type KeyboardTarget = "local" | "remote";
+type KeyboardTarget = string;
 type Theme = "light" | "soft";
 type MouseSensitivity = "stable" | "balanced" | "sensitive";
 type StartupMode = "last" | "host" | "remote" | "idle";
+
+type DeviceStatus = {
+  deviceId: string;
+  name: string;
+  address: string;
+  connected: boolean;
+  legacy: boolean;
+  lastActivityAgoMs: number | null;
+};
 
 type AppStatus = {
   version: string;
@@ -14,9 +23,14 @@ type AppStatus = {
   running: boolean;
   connected: boolean;
   target: KeyboardTarget;
+  localDeviceName: string;
+  activeDeviceId: string | null;
+  devices: DeviceStatus[];
   elevated: boolean;
   logs: string[];
   config: {
+    deviceId: string;
+    deviceAliases: Record<string, string>;
     tcpPort: number;
     discoveryPort: number;
     updatePort: number;
@@ -62,6 +76,7 @@ const app = document.querySelector<HTMLDivElement>("#app");
 if (!app) throw new Error("Missing app root");
 const appRoot = app;
 const STATUS_REFRESH_MS = 1000;
+const MAX_REMOTE_DEVICES = 2;
 
 let activeTab: Tab = "overview";
 let autoFollowLogs = true;
@@ -74,9 +89,14 @@ let status: AppStatus = {
   running: false,
   connected: false,
   target: "local",
+  localDeviceName: "main-computer",
+  activeDeviceId: null,
+  devices: [],
   elevated: false,
   logs: [],
   config: {
+    deviceId: "local",
+    deviceAliases: {},
     tcpPort: 8765,
     discoveryPort: 8766,
     updatePort: 8767,
@@ -136,6 +156,12 @@ async function saveRemoteHost() {
 
 async function setKeyboardTarget(target: KeyboardTarget) {
   await runAction(`target-${target}`, () => invoke("set_keyboard_target", { target }));
+}
+
+async function saveDeviceAlias(deviceId: string, index: number) {
+  const input = document.querySelector<HTMLInputElement>(`#device-alias-${index}`);
+  const alias = input?.value.trim() || null;
+  await runAction(`save-device-${index}`, () => invoke("set_device_alias", { deviceId, alias }));
 }
 
 async function releaseControl() {
@@ -330,17 +356,6 @@ function renderOverviewTab() {
           </div>
         </article>
         <article class="panel">
-          <h2>控制切换与安全释放</h2>
-          <p>鼠标在哪台电脑活动，键盘就自动跟到哪台电脑。鼠标仍由你现有的方式控制，本软件不会跨电脑转发或拦截鼠标。</p>
-          <div class="actions">
-            ${actionButton("release-control", "立即回到主电脑", status.target === "local")}
-            ${actionButton("target-local", "键盘到主电脑", status.target === "local")}
-            ${actionButton("target-remote", "键盘到副电脑", status.target === "remote")}
-          </div>
-        </article>
-      </div>
-      <div class="panel-stack">
-        <article class="panel">
           <h2>当前状态</h2>
           ${definitionList([
             ["模式", modeLabel(status.mode)],
@@ -351,8 +366,56 @@ function renderOverviewTab() {
           ${renderElevationHint()}
         </article>
       </div>
+      <div class="panel-stack">
+        <article class="panel">
+          <h2>控制切换与安全释放</h2>
+          <p>鼠标在哪台电脑活动，键盘就跟到哪台。鼠标仍由 Logi 处理，Devices Router 不转发鼠标。</p>
+          <div class="actions">
+            ${actionButton("release-control", "立即回到主电脑", status.target === "local")}
+            ${actionButton("target-local", "键盘到主电脑", status.target === "local")}
+          </div>
+        </article>
+        <article class="panel device-panel">
+          <h2>设备与键盘目标</h2>
+          ${renderRemoteDevices()}
+        </article>
+      </div>
     </section>
   `;
+}
+
+function renderRemoteDevices() {
+  const cards = [renderLocalDevice(), ...status.devices.slice(0, MAX_REMOTE_DEVICES).map(renderRemoteDevice)];
+  while (cards.length < MAX_REMOTE_DEVICES + 1) cards.push(renderEmptyRemoteSlot(cards.length));
+  return `<div class="device-grid">${cards.join("")}</div>`;
+}
+
+function renderLocalDevice() {
+  return `<div class="device-card ${status.target === "local" ? "active" : ""}" data-device-id="local">
+    <div class="device-card-title"><strong>${escapeHtml(status.localDeviceName || "主电脑")}</strong><span>本机</span></div>
+    <p>鼠标在本机活动时，键盘自动回到这里。</p>
+    ${actionButton("target-local-device", "切到本机", status.target === "local")}
+  </div>`;
+}
+
+function renderRemoteDevice(device: DeviceStatus, index: number) {
+  const active = status.activeDeviceId === device.deviceId;
+  return `<div class="device-card ${active ? "active" : ""}" data-device-id="${escapeHtml(device.deviceId)}">
+    <div class="device-card-title"><strong>${escapeHtml(device.name)}</strong><span>${device.connected ? "在线" : "离线"}</span></div>
+    <p>${escapeHtml(device.address)}${device.legacy ? " � Legacy" : ""}</p>
+    <div class="device-alias-row">
+      <input id="device-alias-${index}" value="${escapeHtml(device.name)}" placeholder="设备别名" />
+      ${actionButton(`save-device-${index}`, "保存", false)}
+    </div>
+    <div class="actions">${actionButton(`target-device-${index}`, "切到这台", active)}</div>
+  </div>`;
+}
+
+function renderEmptyRemoteSlot(slot: number) {
+  return `<div class="device-card empty" data-device-id="empty-${slot}">
+    <div class="device-card-title"><strong>副电脑 ${slot}</strong><span>等待连接</span></div>
+    <p>在新电脑安装同一版本，启动副电脑模式即可。</p>
+  </div>`;
 }
 
 function renderMouseTab() {
@@ -529,7 +592,11 @@ function bindTabEvents() {
   onClick("stop", stopMode);
   onClick("save-host", saveRemoteHost);
   onClick("target-local", () => setKeyboardTarget("local"));
-  onClick("target-remote", () => setKeyboardTarget("remote"));
+  onClick("target-local-device", () => setKeyboardTarget("local"));
+  status.devices.slice(0, MAX_REMOTE_DEVICES).forEach((device, index) => {
+    onClick(`target-device-${index}`, () => setKeyboardTarget(device.deviceId));
+    onClick(`save-device-${index}`, () => saveDeviceAlias(device.deviceId, index));
+  });
   onClick("release-control", releaseControl);
   onClick("restart-admin", restartAsAdmin);
   onClick("start-login", () => setStartOnLogin(!status.config.startOnLogin));
@@ -598,7 +665,8 @@ function modeLabel(mode: AppMode) {
 }
 
 function targetLabel(target: KeyboardTarget) {
-  return target === "remote" ? "副电脑" : "主电脑";
+  if (target === "local") return status.localDeviceName || "\u{4e3b}\u{7535}\u{8111}";
+  return status.devices.find((device) => device.deviceId === target)?.name || `remote (${target.slice(0, 8)})`;
 }
 
 function renderElevationHint() {
