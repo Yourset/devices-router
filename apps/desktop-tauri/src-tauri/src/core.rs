@@ -468,6 +468,7 @@ fn handle_host_client(
                 },
                 Ok(BridgeEvent::MouseActivity {
                     source: MouseSource::Remote,
+                    ..
                 }) => {
                     if should_follow_mouse_activity(&runtime.config())
                         && should_accept_remote_mouse_activity(
@@ -578,7 +579,10 @@ fn send_target_state(runtime: &Arc<AppRuntime>, writer: &mut TcpStream) {
         KeyboardTarget::Local => TargetSide::Local,
         KeyboardTarget::Remote | KeyboardTarget::Device(_) => TargetSide::Remote,
     };
-    let event = BridgeEvent::TargetState { target };
+    let event = BridgeEvent::TargetState {
+        target,
+        target_epoch: None,
+    };
     if let Err(err) = encode_event(&event).and_then(|bytes| {
         writer.write_all(&bytes)?;
         Ok(())
@@ -855,7 +859,7 @@ fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
                                     ));
                                 }
                             }
-                            Ok(BridgeEvent::TargetState { target }) => {
+                            Ok(BridgeEvent::TargetState { target, .. }) => {
                                 let target = match target {
                                     TargetSide::Local => KeyboardTarget::Local,
                                     TargetSide::Remote => {
@@ -1054,6 +1058,8 @@ fn run_remote_mouse_loop(runtime: Arc<AppRuntime>, event_tx: mpsc::Sender<Bridge
         last = current;
         let event = BridgeEvent::MouseActivity {
             source: MouseSource::Remote,
+            activity_id: None,
+            target_epoch: None,
         };
         if event_tx.send(event).is_err() {
             runtime.log("[副电脑] 鼠标活动上报已停止，等待重新连接\n");
@@ -1289,7 +1295,10 @@ mod tests {
             classify_remote_handshake(BridgeEvent::ServerHello {
                 accepted: true,
                 reason: None,
-                max_devices: 2
+                max_devices: 2,
+                capabilities: Vec::new(),
+                activity_token: None,
+                activity_port: None,
             })
             .unwrap(),
             RemoteHandshake::Accepted
@@ -1311,6 +1320,9 @@ mod tests {
             accepted: false,
             reason: Some("two device limit".to_string()),
             max_devices: 2,
+            capabilities: Vec::new(),
+            activity_token: None,
+            activity_port: None,
         })
         .unwrap_err();
         assert!(error.to_string().contains("two device limit"));

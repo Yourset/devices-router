@@ -22,6 +22,20 @@ pub enum BridgeEvent {
         reason: Option<String>,
         #[serde(rename = "maxDevices")]
         max_devices: u8,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        capabilities: Vec<String>,
+        #[serde(
+            default,
+            rename = "activityToken",
+            skip_serializing_if = "Option::is_none"
+        )]
+        activity_token: Option<String>,
+        #[serde(
+            default,
+            rename = "activityPort",
+            skip_serializing_if = "Option::is_none"
+        )]
+        activity_port: Option<u16>,
     },
     Ping {
         message: String,
@@ -32,6 +46,18 @@ pub enum BridgeEvent {
     },
     MouseActivity {
         source: MouseSource,
+        #[serde(
+            default,
+            rename = "activityId",
+            skip_serializing_if = "Option::is_none"
+        )]
+        activity_id: Option<u64>,
+        #[serde(
+            default,
+            rename = "targetEpoch",
+            skip_serializing_if = "Option::is_none"
+        )]
+        target_epoch: Option<u64>,
     },
     MouseInput {
         event: MouseInputEvent,
@@ -41,10 +67,64 @@ pub enum BridgeEvent {
     },
     TargetState {
         target: TargetSide,
+        #[serde(
+            default,
+            rename = "targetEpoch",
+            skip_serializing_if = "Option::is_none"
+        )]
+        target_epoch: Option<u64>,
     },
     Key {
         action: KeyAction,
         key: String,
+    },
+    LinkStatsState {
+        #[serde(
+            default,
+            rename = "currentRttMs",
+            skip_serializing_if = "Option::is_none"
+        )]
+        current_rtt_ms: Option<u64>,
+        #[serde(
+            default,
+            rename = "medianRttMs",
+            skip_serializing_if = "Option::is_none"
+        )]
+        median_rtt_ms: Option<u64>,
+        #[serde(
+            default,
+            rename = "jitterMs",
+            skip_serializing_if = "Option::is_none"
+        )]
+        jitter_ms: Option<u64>,
+        #[serde(
+            default,
+            rename = "lossPercent",
+            skip_serializing_if = "Option::is_none"
+        )]
+        loss_percent: Option<u64>,
+        #[serde(rename = "sampleCount")]
+        sample_count: u8,
+    },
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ActivityDatagram {
+    Hello {
+        #[serde(rename = "deviceId")]
+        device_id: String,
+        #[serde(rename = "activityToken")]
+        activity_token: String,
+    },
+    Activity {
+        #[serde(rename = "deviceId")]
+        device_id: String,
+        #[serde(rename = "activityToken")]
+        activity_token: String,
+        #[serde(rename = "activityId")]
+        activity_id: u64,
     },
 }
 
@@ -127,6 +207,16 @@ pub fn decode_event(payload: &[u8]) -> anyhow::Result<BridgeEvent> {
     Ok(serde_json::from_slice(trimmed)?)
 }
 
+#[allow(dead_code)]
+pub fn encode_activity_datagram(datagram: &ActivityDatagram) -> anyhow::Result<Vec<u8>> {
+    Ok(serde_json::to_vec(datagram)?)
+}
+
+#[allow(dead_code)]
+pub fn decode_activity_datagram(payload: &[u8]) -> anyhow::Result<ActivityDatagram> {
+    Ok(serde_json::from_slice(payload)?)
+}
+
 #[cfg(test)]
 pub fn is_legacy_silent_lan_client(peer_ip: &str) -> bool {
     peer_ip != "127.0.0.1" && peer_ip != "::1"
@@ -144,11 +234,8 @@ pub fn decode_discovery(payload: &str) -> Option<u16> {
 }
 
 fn trim_newline(payload: &[u8]) -> &[u8] {
-    payload
-        .strip_suffix(b"\n")
-        .unwrap_or(payload)
-        .strip_suffix(b"\r")
-        .unwrap_or(payload)
+    let trimmed = payload.strip_suffix(b"\n").unwrap_or(payload);
+    trimmed.strip_suffix(b"\r").unwrap_or(trimmed)
 }
 
 #[cfg(test)]
@@ -191,6 +278,9 @@ mod tests {
             accepted: false,
             reason: Some("two remote device limit reached".to_string()),
             max_devices: 2,
+            capabilities: Vec::new(),
+            activity_token: None,
+            activity_port: None,
         };
 
         assert_eq!(decode_event(&encode_event(&event).unwrap()).unwrap(), event);
@@ -251,6 +341,7 @@ mod tests {
     fn target_state_round_trips() {
         let event = BridgeEvent::TargetState {
             target: TargetSide::Local,
+            target_epoch: None,
         };
 
         let payload = encode_event(&event).unwrap();
@@ -303,5 +394,145 @@ mod tests {
         let payload = encode_event(&event).unwrap();
 
         assert_eq!(decode_event(&payload).unwrap(), event);
+    }
+
+    #[test]
+    fn server_hello_supports_optional_activity_metadata() {
+        let legacy = br#"{"type":"server_hello","accepted":true,"maxDevices":2}"#;
+        assert_eq!(
+            decode_event(legacy).unwrap(),
+            BridgeEvent::ServerHello {
+                accepted: true,
+                reason: None,
+                max_devices: 2,
+                capabilities: Vec::new(),
+                activity_token: None,
+                activity_port: None,
+            }
+        );
+
+        let event = BridgeEvent::ServerHello {
+            accepted: true,
+            reason: None,
+            max_devices: 2,
+            capabilities: vec!["udp_activity_v1".to_string()],
+            activity_token: Some("token-123".to_string()),
+            activity_port: Some(4567),
+        };
+
+        let payload = encode_event(&event).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(payload.trim_ascii_end()).unwrap();
+        assert_eq!(json["capabilities"][0], "udp_activity_v1");
+        assert_eq!(json["activityToken"], "token-123");
+        assert_eq!(json["activityPort"], 4567);
+        assert_eq!(decode_event(&payload).unwrap(), event);
+    }
+
+    #[test]
+    fn mouse_activity_and_target_state_support_optional_epoch_metadata() {
+        let legacy_activity = br#"{"type":"mouse_activity","source":"remote"}"#;
+        let legacy_target = br#"{"type":"target_state","target":"remote"}"#;
+        assert_eq!(
+            decode_event(legacy_activity).unwrap(),
+            BridgeEvent::MouseActivity {
+                source: MouseSource::Remote,
+                activity_id: None,
+                target_epoch: None,
+            }
+        );
+        assert_eq!(
+            decode_event(legacy_target).unwrap(),
+            BridgeEvent::TargetState {
+                target: TargetSide::Remote,
+                target_epoch: None,
+            }
+        );
+
+        let activity = BridgeEvent::MouseActivity {
+            source: MouseSource::Remote,
+            activity_id: Some(77),
+            target_epoch: Some(9),
+        };
+        let target = BridgeEvent::TargetState {
+            target: TargetSide::Remote,
+            target_epoch: Some(9),
+        };
+
+        let activity_payload = encode_event(&activity).unwrap();
+        let target_payload = encode_event(&target).unwrap();
+
+        assert_eq!(decode_event(&activity_payload).unwrap(), activity);
+        assert_eq!(decode_event(&target_payload).unwrap(), target);
+    }
+
+    #[test]
+    fn link_stats_state_round_trips() {
+        let event = BridgeEvent::LinkStatsState {
+            current_rtt_ms: Some(18),
+            median_rtt_ms: Some(20),
+            jitter_ms: Some(3),
+            loss_percent: Some(25),
+            sample_count: 4,
+        };
+
+        let payload = encode_event(&event).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(payload.trim_ascii_end()).unwrap();
+
+        assert_eq!(json["currentRttMs"], 18);
+        assert_eq!(json["medianRttMs"], 20);
+        assert_eq!(json["jitterMs"], 3);
+        assert_eq!(json["lossPercent"], 25);
+        assert_eq!(json["sampleCount"], 4);
+        assert_eq!(decode_event(&payload).unwrap(), event);
+    }
+
+    #[test]
+    fn protocol_decoding_ignores_unknown_fields() {
+        let payload = br#"{
+            "type":"server_hello",
+            "accepted":true,
+            "maxDevices":2,
+            "capabilities":["udp_activity_v1"],
+            "activityToken":"token-123",
+            "activityPort":4567,
+            "ignored":"value"
+        }"#;
+
+        assert_eq!(
+            decode_event(payload).unwrap(),
+            BridgeEvent::ServerHello {
+                accepted: true,
+                reason: None,
+                max_devices: 2,
+                capabilities: vec!["udp_activity_v1".to_string()],
+                activity_token: Some("token-123".to_string()),
+                activity_port: Some(4567),
+            }
+        );
+    }
+
+    #[test]
+    fn activity_datagrams_use_camel_case_without_tcp_newlines() {
+        let hello = ActivityDatagram::Hello {
+            device_id: "device-a".to_string(),
+            activity_token: "token-123".to_string(),
+        };
+        let activity = ActivityDatagram::Activity {
+            device_id: "device-a".to_string(),
+            activity_token: "token-123".to_string(),
+            activity_id: 42,
+        };
+
+        let hello_payload = encode_activity_datagram(&hello).unwrap();
+        let activity_payload = encode_activity_datagram(&activity).unwrap();
+        let hello_json: serde_json::Value = serde_json::from_slice(&hello_payload).unwrap();
+        let activity_json: serde_json::Value = serde_json::from_slice(&activity_payload).unwrap();
+
+        assert!(!hello_payload.ends_with(b"\n"));
+        assert_eq!(hello_json["deviceId"], "device-a");
+        assert_eq!(hello_json["activityToken"], "token-123");
+        assert_eq!(activity_json["activityId"], 42);
+        assert_eq!(decode_activity_datagram(&hello_payload).unwrap(), hello);
+        assert_eq!(decode_activity_datagram(&activity_payload).unwrap(), activity);
     }
 }

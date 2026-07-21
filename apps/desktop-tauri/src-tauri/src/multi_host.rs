@@ -269,6 +269,9 @@ fn handle_host_connection(
                     accepted: false,
                     reason: Some(reason.clone()),
                     max_devices: MAX_REMOTE_DEVICES as u8,
+                    capabilities: Vec::new(),
+                    activity_token: None,
+                    activity_port: None,
                 })?)?;
             }
             runtime.log(format!("[host] rejected client {address}: {reason}\n"));
@@ -280,6 +283,9 @@ fn handle_host_connection(
             accepted: true,
             reason: None,
             max_devices: MAX_REMOTE_DEVICES as u8,
+            capabilities: Vec::new(),
+            activity_token: None,
+            activity_port: None,
         }
     } else {
         BridgeEvent::Ping {
@@ -599,6 +605,7 @@ fn broadcast_target_states(runtime: &Arc<AppRuntime>) {
     for (device_id, sender) in runtime.session_senders() {
         let _ = sender.send(BridgeEvent::TargetState {
             target: target_state_for_device(&target, &device_id),
+            target_epoch: None,
         });
     }
 }
