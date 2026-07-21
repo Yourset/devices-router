@@ -8,7 +8,7 @@ use serde::Serialize;
 use std::collections::VecDeque;
 use std::sync::mpsc;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc, Mutex,
 };
 
@@ -71,6 +71,7 @@ pub struct SharedState {
 pub struct AppRuntime {
     state: Mutex<InnerState>,
     stop: AtomicBool,
+    run_generation: AtomicU64,
 }
 
 #[derive(Debug)]
@@ -112,6 +113,7 @@ impl SharedState {
                     host_latency_ms: None,
                 }),
                 stop: AtomicBool::new(false),
+                run_generation: AtomicU64::new(0),
             }),
         }
     }
@@ -180,6 +182,7 @@ impl SharedState {
 
 impl AppRuntime {
     pub fn start(&self, mode: AppMode) {
+        self.run_generation.fetch_add(1, Ordering::SeqCst);
         self.stop.store(false, Ordering::SeqCst);
         let mut inner = self.state.lock().expect("state lock poisoned");
         inner.mode = mode;
@@ -205,6 +208,14 @@ impl AppRuntime {
 
     pub fn should_stop(&self) -> bool {
         self.stop.load(Ordering::SeqCst)
+    }
+
+    pub fn run_generation(&self) -> u64 {
+        self.run_generation.load(Ordering::SeqCst)
+    }
+
+    pub fn run_generation_is_active(&self, generation: u64) -> bool {
+        !self.should_stop() && self.run_generation() == generation
     }
 
     pub fn set_connected(&self, connected: bool) {
@@ -569,6 +580,25 @@ mod tests {
         let second = runtime.set_remote_sender(second_tx);
         assert!(!runtime.remote_sender_generation_matches(first));
         assert!(runtime.remote_sender_generation_matches(second));
+    }
+
+    #[test]
+    fn starting_a_new_mode_invalidates_workers_from_the_previous_run() {
+        let state = SharedState::new("test");
+        let runtime = state.runtime();
+
+        runtime.start(AppMode::Host);
+        let first = runtime.run_generation();
+        assert!(runtime.run_generation_is_active(first));
+
+        runtime.start(AppMode::Remote);
+        let second = runtime.run_generation();
+        assert_ne!(first, second);
+        assert!(!runtime.run_generation_is_active(first));
+        assert!(runtime.run_generation_is_active(second));
+
+        runtime.request_stop();
+        assert!(!runtime.run_generation_is_active(second));
     }
 
     #[test]

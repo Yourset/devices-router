@@ -14,6 +14,8 @@ use std::time::{Duration, Instant};
 
 pub const UDP_ACTIVITY_CAPABILITY: &str = "udp_activity_v1";
 pub const TCP_FALLBACK_DELAY: Duration = Duration::from_millis(60);
+const HOST_ACTIVITY_BIND_RETRY: Duration = Duration::from_millis(500);
+const HOST_ACTIVITY_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ActivityDatagramOutcome {
@@ -131,16 +133,29 @@ pub fn spawn_host_activity_listener(
     runtime: Arc<AppRuntime>,
     on_outcome: impl Fn(ActivityDatagramOutcome) + Send + 'static,
 ) -> Result<()> {
-    let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, DISCOVERY_PORT))
-        .context("bind host activity listener")?;
+    let run_generation = runtime.run_generation();
+    let bind_deadline = Instant::now() + HOST_ACTIVITY_BIND_RETRY;
+    let socket = loop {
+        match UdpSocket::bind((Ipv4Addr::UNSPECIFIED, DISCOVERY_PORT)) {
+            Ok(socket) => break socket,
+            Err(err)
+                if err.kind() == std::io::ErrorKind::AddrInUse
+                    && runtime.run_generation_is_active(run_generation)
+                    && Instant::now() < bind_deadline =>
+            {
+                thread::sleep(HOST_ACTIVITY_POLL_INTERVAL);
+            }
+            Err(err) => return Err(err).context("bind host activity listener"),
+        }
+    };
     socket
-        .set_read_timeout(Some(Duration::from_millis(200)))
+        .set_read_timeout(Some(HOST_ACTIVITY_POLL_INTERVAL))
         .context("set host activity listener timeout")?;
     thread::Builder::new()
         .name("devices-router-host-activity".to_string())
         .spawn(move || {
             let mut buf = [0_u8; 512];
-            while !runtime.should_stop() {
+            while runtime.run_generation_is_active(run_generation) {
                 match socket.recv_from(&mut buf) {
                     Ok((len, source)) => {
                         if let Some(outcome) =
