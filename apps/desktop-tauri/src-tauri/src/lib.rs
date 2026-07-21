@@ -5,6 +5,7 @@ mod discovery;
 mod elevation;
 mod input;
 mod keyboard_hook;
+mod latency;
 mod mouse;
 mod mouse_hook;
 mod multi_host;

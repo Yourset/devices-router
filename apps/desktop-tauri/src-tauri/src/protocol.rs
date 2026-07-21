@@ -25,6 +25,10 @@ pub enum BridgeEvent {
     },
     Ping {
         message: String,
+        #[serde(default, rename = "probeId", skip_serializing_if = "Option::is_none")]
+        probe_id: Option<u64>,
+        #[serde(default, rename = "replyTo", skip_serializing_if = "Option::is_none")]
+        reply_to: Option<u64>,
     },
     MouseActivity {
         source: MouseSource,
@@ -216,6 +220,31 @@ mod tests {
         let payload = encode_event(&event).unwrap();
 
         assert_eq!(decode_event(&payload).unwrap(), event);
+    }
+
+    #[test]
+    fn latency_probe_and_reply_round_trip_without_breaking_legacy_ping() {
+        let legacy = br#"{"type":"ping","message":"host-heartbeat"}"#;
+        assert_eq!(
+            decode_event(legacy).unwrap(),
+            BridgeEvent::Ping {
+                message: "host-heartbeat".to_string(),
+                probe_id: None,
+                reply_to: None,
+            }
+        );
+        let probe = BridgeEvent::Ping {
+            message: "latency-probe".to_string(),
+            probe_id: Some(42),
+            reply_to: None,
+        };
+        let reply = BridgeEvent::Ping {
+            message: "latency-reply".to_string(),
+            probe_id: None,
+            reply_to: Some(42),
+        };
+        assert_eq!(decode_event(&encode_event(&probe).unwrap()).unwrap(), probe);
+        assert_eq!(decode_event(&encode_event(&reply).unwrap()).unwrap(), reply);
     }
 
     #[test]

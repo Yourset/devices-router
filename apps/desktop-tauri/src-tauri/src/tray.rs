@@ -176,6 +176,7 @@ mod tests {
             local_device_name: "Host-PC".to_string(),
             active_device_id: target.is_remote().then(|| target.as_status_value()),
             devices: Vec::new(),
+            host_latency_ms: None,
             elevated: false,
             logs: Vec::new(),
             config: AppConfig::default(),
@@ -216,6 +217,7 @@ mod tests {
             connected: true,
             legacy: false,
             last_activity_ago_ms: Some(0),
+            latency_ms: Some(4),
         });
         assert!(tray_status_label(&status).contains("Studio PC"));
     }

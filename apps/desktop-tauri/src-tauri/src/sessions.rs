@@ -59,6 +59,7 @@ pub struct DeviceStatus {
     pub connected: bool,
     pub legacy: bool,
     pub last_activity_ago_ms: Option<u64>,
+    pub latency_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -69,6 +70,7 @@ struct SessionRecord {
     legacy: bool,
     sender: mpsc::Sender<BridgeEvent>,
     last_activity: Option<Instant>,
+    latency_ms: Option<u64>,
 }
 
 #[derive(Debug, Default)]
@@ -113,6 +115,7 @@ impl SessionRegistry {
                 legacy,
                 sender,
                 last_activity: None,
+                latency_ms: None,
             },
         );
         RegisterResult::Accepted(RegisterAcceptance {
@@ -175,6 +178,17 @@ impl SessionRegistry {
         true
     }
 
+    pub fn record_latency(&mut self, device_id: &str, generation: u64, sample_ms: u64) -> bool {
+        let Some(session) = self.sessions.get_mut(device_id) else {
+            return false;
+        };
+        if session.generation != generation {
+            return false;
+        }
+        session.latency_ms = Some(smooth_latency(session.latency_ms, sample_ms));
+        true
+    }
+
     pub fn snapshots(&self, aliases: &BTreeMap<String, String>) -> Vec<DeviceStatus> {
         let now = Instant::now();
         let mut devices = self
@@ -193,11 +207,18 @@ impl SessionRegistry {
                 last_activity_ago_ms: session
                     .last_activity
                     .map(|last| now.saturating_duration_since(last).as_millis() as u64),
+                latency_ms: session.latency_ms,
             })
             .collect::<Vec<_>>();
         devices.sort_by(|left, right| left.device_id.cmp(&right.device_id));
         devices
     }
+}
+
+pub(crate) fn smooth_latency(previous_ms: Option<u64>, sample_ms: u64) -> u64 {
+    previous_ms.map_or(sample_ms, |previous| {
+        previous.saturating_mul(3).saturating_add(sample_ms) / 4
+    })
 }
 
 #[cfg(test)]
@@ -285,5 +306,43 @@ mod tests {
         assert_eq!(devices[0].name, "Studio PC");
         assert_eq!(devices[0].device_id, "a");
         assert!(devices[0].connected);
+    }
+
+    #[test]
+    fn latency_is_smoothed_per_device_and_stale_generation_is_ignored() {
+        let mut registry = SessionRegistry::default();
+        let (tx, _) = mpsc::channel::<BridgeEvent>();
+        let first = registry
+            .register(identity(Some("a"), "Windows-A", "10.0.0.1"), tx.clone())
+            .accepted()
+            .unwrap();
+        let second = registry
+            .register(identity(Some("b"), "Windows-B", "10.0.0.2"), tx.clone())
+            .accepted()
+            .unwrap();
+
+        assert!(registry.record_latency("a", first.generation, 8));
+        assert!(registry.record_latency("a", first.generation, 12));
+        assert!(registry.record_latency("b", second.generation, 30));
+        assert!(!registry.record_latency("a", first.generation.wrapping_add(1), 99));
+
+        let devices = registry.snapshots(&BTreeMap::new());
+        assert_eq!(devices[0].latency_ms, Some(9));
+        assert_eq!(devices[1].latency_ms, Some(30));
+    }
+
+    #[test]
+    fn reconnect_clears_previous_latency() {
+        let mut registry = SessionRegistry::default();
+        let (tx, _) = mpsc::channel::<BridgeEvent>();
+        let first = registry
+            .register(identity(Some("a"), "Windows-A", "10.0.0.1"), tx.clone())
+            .accepted()
+            .unwrap();
+        assert!(registry.record_latency("a", first.generation, 8));
+
+        registry.register(identity(Some("a"), "Windows-A", "10.0.0.1"), tx);
+
+        assert_eq!(registry.snapshots(&BTreeMap::new())[0].latency_ms, None);
     }
 }

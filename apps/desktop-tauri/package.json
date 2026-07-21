@@ -1,13 +1,13 @@
 {
   "name": "devices-router-desktop",
   "private": true,
-  "version": "0.2.2",
+  "version": "0.2.3",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc && vite build",
     "tauri": "tauri",
-    "build:lan-update": "tauri build && powershell.exe -ExecutionPolicy Bypass -File ./scripts/prepare-lan-update.ps1"
+    "build:lan-update": "tauri build --bundles nsis && powershell.exe -ExecutionPolicy Bypass -File ./scripts/prepare-lan-update.ps1"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",

@@ -4,6 +4,7 @@ use crate::input::release_local_modifiers;
 use crate::keyboard_hook::{
     run_keyboard_hook, set_key_suppression, take_panic_request, RawKeyEvent,
 };
+use crate::latency::LatencyProbeTracker;
 use crate::mouse::cursor_position;
 use crate::mouse_hook::set_mouse_input_suppression;
 use crate::protocol::{
@@ -16,12 +17,13 @@ use anyhow::{Context, Result};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 const TCP_PORT: u16 = 8765;
 const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(300);
+const LATENCY_PROBE_INTERVAL: Duration = Duration::from_millis(500);
 const LOOP_INTERVAL: Duration = Duration::from_millis(5);
 const EMERGENCY_ACTIVITY_BLOCK: Duration = Duration::from_secs(1);
 
@@ -241,6 +243,8 @@ fn handle_host_connection(
     if capabilities.iter().any(|value| value == "discovery_probe") {
         stream.write_all(&encode_event(&BridgeEvent::Ping {
             message: "ok".to_string(),
+            probe_id: None,
+            reply_to: None,
         })?)?;
         return Ok(());
     }
@@ -255,7 +259,7 @@ fn handle_host_connection(
             device_name,
             address: address.to_string(),
         },
-        outbound_tx,
+        outbound_tx.clone(),
     );
     let acceptance = match registration {
         RegisterResult::Accepted(acceptance) => acceptance,
@@ -280,6 +284,8 @@ fn handle_host_connection(
     } else {
         BridgeEvent::Ping {
             message: "ok".to_string(),
+            probe_id: None,
+            reply_to: None,
         }
     };
     stream.write_all(&encode_event(&handshake_response)?)?;
@@ -298,27 +304,48 @@ fn handle_host_connection(
     let mut writer = stream.try_clone().context("clone host writer stream")?;
     let writer_events = event_tx.clone();
     let writer_device_id = device_id.clone();
+    let latency_tracker = Arc::new(Mutex::new(LatencyProbeTracker::default()));
+    let writer_latency_tracker = Arc::clone(&latency_tracker);
     thread::Builder::new()
         .name(format!("devices-router-host-writer-{device_id}"))
-        .spawn(move || loop {
-            let event = match outbound_rx.recv_timeout(HEARTBEAT_INTERVAL) {
-                Ok(event) => event,
-                Err(RecvTimeoutError::Timeout) => BridgeEvent::Ping {
-                    message: "host-heartbeat".to_string(),
-                },
-                Err(RecvTimeoutError::Disconnected) => break,
-            };
-            let result = encode_event(&event).and_then(|bytes| {
-                writer.write_all(&bytes)?;
-                Ok(())
-            });
-            if let Err(err) = result {
-                let _ = writer_events.send(HostEvent::Disconnected {
-                    device_id: writer_device_id.clone(),
-                    generation,
-                    reason: format!("write failed: {err:#}"),
+        .spawn(move || {
+            let mut last_probe = Instant::now();
+            loop {
+                let event = match outbound_rx.recv_timeout(HEARTBEAT_INTERVAL) {
+                    Ok(event) => event,
+                    Err(RecvTimeoutError::Timeout) => BridgeEvent::Ping {
+                        message: "host-heartbeat".to_string(),
+                        probe_id: None,
+                        reply_to: None,
+                    },
+                    Err(RecvTimeoutError::Disconnected) => break,
+                };
+                let result = encode_event(&event).and_then(|bytes| {
+                    writer.write_all(&bytes)?;
+                    if last_probe.elapsed() >= LATENCY_PROBE_INTERVAL {
+                        let now = Instant::now();
+                        let probe_id = writer_latency_tracker
+                            .lock()
+                            .expect("latency tracker lock poisoned")
+                            .start_probe(now);
+                        let probe = BridgeEvent::Ping {
+                            message: "latency-probe".to_string(),
+                            probe_id: Some(probe_id),
+                            reply_to: None,
+                        };
+                        writer.write_all(&encode_event(&probe)?)?;
+                        last_probe = now;
+                    }
+                    Ok(())
                 });
-                break;
+                if let Err(err) = result {
+                    let _ = writer_events.send(HostEvent::Disconnected {
+                        device_id: writer_device_id.clone(),
+                        generation,
+                        reason: format!("write failed: {err:#}"),
+                    });
+                    break;
+                }
             }
         })
         .context("spawn host writer thread")?;
@@ -352,7 +379,26 @@ fn handle_host_connection(
                         break;
                     }
                 }
-                Ok(BridgeEvent::Ping { .. }) => {}
+                Ok(BridgeEvent::Ping {
+                    probe_id, reply_to, ..
+                }) => {
+                    if let Some(probe_id) = probe_id {
+                        let _ = outbound_tx.send(BridgeEvent::Ping {
+                            message: "latency-reply".to_string(),
+                            probe_id: None,
+                            reply_to: Some(probe_id),
+                        });
+                    }
+                    if let Some(reply_to) = reply_to {
+                        let sample_ms = latency_tracker
+                            .lock()
+                            .expect("latency tracker lock poisoned")
+                            .complete_probe(reply_to, Instant::now());
+                        if let Some(sample_ms) = sample_ms {
+                            runtime.record_session_latency(&device_id, generation, sample_ms);
+                        }
+                    }
+                }
                 Ok(other) => runtime.log(format!(
                     "[host] ignored message from {device_id}: {other:?}\n"
                 )),
@@ -713,7 +759,7 @@ mod tests {
             handle_host_connection(runtime, stream, peer, event_tx).unwrap();
         });
 
-        let (stream, hello) = connect_test_client(address, "persistent-device");
+        let (mut stream, hello) = connect_test_client(address, "persistent-device");
         assert!(matches!(
             hello,
             BridgeEvent::ServerHello { accepted: true, .. }
@@ -723,16 +769,40 @@ mod tests {
             .unwrap();
         let mut reader = BufReader::new(stream.try_clone().unwrap());
         let mut line = String::new();
-        let bytes = reader.read_line(&mut line).unwrap();
+        let mut messages_seen = 0_u8;
+        let probe_id = loop {
+            let bytes = reader.read_line(&mut line).unwrap();
+            assert!(
+                bytes > 0,
+                "host closed the connection immediately after handshake"
+            );
+            messages_seen += 1;
+            if let BridgeEvent::Ping {
+                probe_id: Some(probe_id),
+                ..
+            } = decode_event(line.as_bytes()).unwrap()
+            {
+                break probe_id;
+            }
+            assert!(messages_seen < 4, "host did not send a latency probe");
+            line.clear();
+        };
+        stream
+            .write_all(
+                &encode_event(&BridgeEvent::Ping {
+                    message: "latency-reply".to_string(),
+                    probe_id: None,
+                    reply_to: Some(probe_id),
+                })
+                .unwrap(),
+            )
+            .unwrap();
 
-        assert!(
-            bytes > 0,
-            "host closed the connection immediately after handshake"
-        );
-        assert!(matches!(
-            decode_event(line.as_bytes()).unwrap(),
-            BridgeEvent::Ping { .. }
-        ));
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while state.snapshot().devices[0].latency_ms.is_none() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(state.snapshot().devices[0].latency_ms.is_some());
 
         drop(reader);
         drop(stream);

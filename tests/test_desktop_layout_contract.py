@@ -59,14 +59,20 @@ def test_desktop_release_version_is_consistent():
     cargo = (DESKTOP / "src-tauri" / "Cargo.toml").read_text(encoding="utf-8")
     cargo_lock = (DESKTOP / "src-tauri" / "Cargo.lock").read_text(encoding="utf-8")
 
-    assert package["version"] == "0.2.2"
-    assert tauri["version"] == "0.2.2"
-    assert re.search(r'^version = "0\.2\.2"$', cargo, re.MULTILINE)
+    assert package["version"] == "0.2.3"
+    assert tauri["version"] == "0.2.3"
+    assert re.search(r'^version = "0\.2\.3"$', cargo, re.MULTILINE)
     assert re.search(
-        r'name = "devices-router"\s+version = "0\.2\.2"',
+        r'name = "devices-router"\s+version = "0\.2\.3"',
         cargo_lock,
         re.MULTILINE,
     )
+
+
+def test_lan_update_build_targets_the_supported_nsis_installer_only():
+    package = json.loads((DESKTOP / "package.json").read_text(encoding="utf-8"))
+
+    assert "tauri build --bundles nsis" in package["scripts"]["build:lan-update"]
 
 
 def test_overview_uses_independent_columns_to_avoid_grid_row_gaps():
@@ -98,3 +104,17 @@ def test_multi_device_ui_keeps_two_remote_slots_in_fixed_layout():
     assert "renderRemoteDevices" in source
     assert re.search(r"\.device-grid\s*\{[^{}]*display\s*:\s*grid", css, re.DOTALL)
     assert "overflow: auto" not in re.sub(r"\.log-panel textarea\s*\{[^{}]*\}", "", css, flags=re.DOTALL)
+
+
+def test_overview_displays_host_and_per_device_latency_without_new_scrollers():
+    source = (DESKTOP / "src" / "main.ts").read_text(encoding="utf-8")
+    css = (DESKTOP / "src" / "styles.css").read_text(encoding="utf-8")
+
+    assert "latencyMs: number | null;" in source
+    assert "hostLatencyMs: number | null;" in source
+    assert '主机延迟' in source
+    assert '延迟：${latencyLabel(device.latencyMs, device.connected)}' in source
+    assert 'return "测量中"' in source
+    assert "overflow: auto" not in re.sub(
+        r"\.log-panel textarea\s*\{[^{}]*\}", "", css, flags=re.DOTALL
+    )

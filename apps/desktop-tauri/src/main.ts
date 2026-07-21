@@ -15,6 +15,7 @@ type DeviceStatus = {
   connected: boolean;
   legacy: boolean;
   lastActivityAgoMs: number | null;
+  latencyMs: number | null;
 };
 
 type AppStatus = {
@@ -26,6 +27,7 @@ type AppStatus = {
   localDeviceName: string;
   activeDeviceId: string | null;
   devices: DeviceStatus[];
+  hostLatencyMs: number | null;
   elevated: boolean;
   logs: string[];
   config: {
@@ -84,7 +86,7 @@ let pendingAction: string | null = null;
 let diagnostics: NetworkDiagnostics | null = null;
 
 let status: AppStatus = {
-  version: "0.2.2",
+  version: "0.2.3",
   mode: "idle",
   running: false,
   connected: false,
@@ -92,6 +94,7 @@ let status: AppStatus = {
   localDeviceName: "main-computer",
   activeDeviceId: null,
   devices: [],
+  hostLatencyMs: null,
   elevated: false,
   logs: [],
   config: {
@@ -363,6 +366,7 @@ function renderOverviewTab() {
             ["键盘目标", targetLabel(status.target)],
             ["管理员权限", status.elevated ? "已开启" : "未开启"]
           ])}
+          ${status.mode === "remote" ? `<p class="latency-line">主机延迟：${latencyLabel(status.hostLatencyMs, status.connected)}</p>` : ""}
           ${renderElevationHint()}
         </article>
       </div>
@@ -403,6 +407,7 @@ function renderRemoteDevice(device: DeviceStatus, index: number) {
   return `<div class="device-card ${active ? "active" : ""}" data-device-id="${escapeHtml(device.deviceId)}">
     <div class="device-card-title"><strong>${escapeHtml(device.name)}</strong><span>${device.connected ? "在线" : "离线"}</span></div>
     <p>${escapeHtml(device.address)}${device.legacy ? " � Legacy" : ""}</p>
+    <p>延迟：${latencyLabel(device.latencyMs, device.connected)}</p>
     <div class="device-alias-row">
       <input id="device-alias-${index}" value="${escapeHtml(device.name)}" placeholder="设备别名" />
       ${actionButton(`save-device-${index}`, "保存", false)}
@@ -656,6 +661,12 @@ function definitionList(items: Array<[string, string]>) {
       ${items.map(([key, value]) => `<div><dt>${key}</dt><dd>${value}</dd></div>`).join("")}
     </dl>
   `;
+}
+
+function latencyLabel(latencyMs: number | null, connected: boolean) {
+  if (!connected) return "—";
+  if (latencyMs === null) return "测量中";
+  return `${latencyMs} ms`;
 }
 
 function modeLabel(mode: AppMode) {

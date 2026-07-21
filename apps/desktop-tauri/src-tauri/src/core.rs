@@ -7,6 +7,7 @@ use crate::input::{release_local_modifiers, send_key_event, send_mouse_input_eve
 use crate::keyboard_hook::{
     run_keyboard_hook, set_key_suppression, take_panic_request, RawKeyEvent,
 };
+use crate::latency::LatencyProbeTracker;
 use crate::mouse::{
     at_left_edge, at_right_edge, cursor_position, screen_center, set_cursor_position,
     virtual_screen_rect, MousePosition, ScreenRect,
@@ -21,12 +22,13 @@ use anyhow::{bail, Context, Result};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 const TCP_PORT: u16 = 8765;
 const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(300);
+const LATENCY_PROBE_INTERVAL: Duration = Duration::from_millis(500);
 const LOCAL_RELEASE_COOLDOWN: Duration = Duration::from_millis(120);
 const EMERGENCY_RELEASE_COOLDOWN: Duration = Duration::from_secs(1);
 const HOST_SESSION_POLL_INTERVAL: Duration = Duration::from_millis(5);
@@ -187,6 +189,8 @@ fn accept_remote_client(
                 stream.set_read_timeout(None).context("恢复连接超时失败")?;
                 stream.write_all(&encode_event(&BridgeEvent::Ping {
                     message: "ok".to_string(),
+                    probe_id: None,
+                    reply_to: None,
                 })?)?;
                 runtime.log(format!("[主电脑] 副电脑已连接：{address}\n"));
                 Ok(Some(stream))
@@ -298,6 +302,8 @@ fn handle_host_client(
         if last_heartbeat.elapsed() >= HEARTBEAT_INTERVAL {
             let heartbeat = BridgeEvent::Ping {
                 message: "host-heartbeat".to_string(),
+                probe_id: None,
+                reply_to: None,
             };
             if let Err(err) = encode_event(&heartbeat).and_then(|bytes| {
                 writer.write_all(&bytes)?;
@@ -780,23 +786,44 @@ fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
                 let (event_tx, event_rx) = mpsc::channel::<BridgeEvent>();
                 let sender_generation = runtime.set_remote_sender(event_tx.clone());
                 let writer_runtime = Arc::clone(&runtime);
+                let latency_tracker = Arc::new(Mutex::new(LatencyProbeTracker::default()));
+                let writer_latency_tracker = Arc::clone(&latency_tracker);
                 thread::Builder::new()
                     .name("devices-router-remote-writer".to_string())
-                    .spawn(move || loop {
-                        let event = match event_rx.recv_timeout(HEARTBEAT_INTERVAL) {
-                            Ok(event) => event,
-                            Err(RecvTimeoutError::Timeout) => BridgeEvent::Ping {
-                                message: "remote-heartbeat".to_string(),
-                            },
-                            Err(RecvTimeoutError::Disconnected) => break,
-                        };
-                        let result = encode_event(&event).and_then(|bytes| {
-                            writer.write_all(&bytes)?;
-                            Ok(())
-                        });
-                        if let Err(err) = result {
-                            writer_runtime.log(format!("[副电脑] 发送控制消息失败：{err:#}\n"));
-                            break;
+                    .spawn(move || {
+                        let mut last_probe = Instant::now();
+                        loop {
+                            let event = match event_rx.recv_timeout(HEARTBEAT_INTERVAL) {
+                                Ok(event) => event,
+                                Err(RecvTimeoutError::Timeout) => BridgeEvent::Ping {
+                                    message: "remote-heartbeat".to_string(),
+                                    probe_id: None,
+                                    reply_to: None,
+                                },
+                                Err(RecvTimeoutError::Disconnected) => break,
+                            };
+                            let result = encode_event(&event).and_then(|bytes| {
+                                writer.write_all(&bytes)?;
+                                if last_probe.elapsed() >= LATENCY_PROBE_INTERVAL {
+                                    let now = Instant::now();
+                                    let probe_id = writer_latency_tracker
+                                        .lock()
+                                        .expect("latency tracker lock poisoned")
+                                        .start_probe(now);
+                                    let probe = BridgeEvent::Ping {
+                                        message: "latency-probe".to_string(),
+                                        probe_id: Some(probe_id),
+                                        reply_to: None,
+                                    };
+                                    writer.write_all(&encode_event(&probe)?)?;
+                                    last_probe = now;
+                                }
+                                Ok(())
+                            });
+                            if let Err(err) = result {
+                                writer_runtime.log(format!("[副电脑] 发送控制消息失败：{err:#}\n"));
+                                break;
+                            }
                         }
                     })
                     .context("spawn remote writer loop")?;
@@ -868,7 +895,26 @@ fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
                                     });
                                 }
                             }
-                            Ok(BridgeEvent::Ping { .. }) => {}
+                            Ok(BridgeEvent::Ping {
+                                probe_id, reply_to, ..
+                            }) => {
+                                if let Some(probe_id) = probe_id {
+                                    let _ = runtime.send_remote_event(BridgeEvent::Ping {
+                                        message: "latency-reply".to_string(),
+                                        probe_id: None,
+                                        reply_to: Some(probe_id),
+                                    });
+                                }
+                                if let Some(reply_to) = reply_to {
+                                    let sample_ms = latency_tracker
+                                        .lock()
+                                        .expect("latency tracker lock poisoned")
+                                        .complete_probe(reply_to, Instant::now());
+                                    if let Some(sample_ms) = sample_ms {
+                                        runtime.record_host_latency(sample_ms);
+                                    }
+                                }
+                            }
                             Ok(other) => runtime.log(format!("[副电脑] 收到消息：{other:?}\n")),
                             Err(err) => runtime.log(format!("[副电脑] 已忽略异常消息：{err:#}\n")),
                         },
@@ -1250,7 +1296,9 @@ mod tests {
         );
         assert_eq!(
             classify_remote_handshake(BridgeEvent::Ping {
-                message: "ok".to_string()
+                message: "ok".to_string(),
+                probe_id: None,
+                reply_to: None,
             })
             .unwrap(),
             RemoteHandshake::LegacyHost

@@ -1,7 +1,9 @@
 use crate::config::AppConfig;
 use crate::protocol::BridgeEvent;
 pub use crate::routing::KeyboardTarget;
-use crate::sessions::{DeviceStatus, RegisterResult, SessionIdentity, SessionRegistry};
+use crate::sessions::{
+    smooth_latency, DeviceStatus, RegisterResult, SessionIdentity, SessionRegistry,
+};
 use serde::Serialize;
 use std::collections::VecDeque;
 use std::sync::mpsc;
@@ -55,6 +57,7 @@ pub struct AppStatus {
     pub local_device_name: String,
     pub active_device_id: Option<String>,
     pub devices: Vec<DeviceStatus>,
+    pub host_latency_ms: Option<u64>,
     pub elevated: bool,
     pub logs: Vec<String>,
     pub config: AppConfig,
@@ -83,6 +86,7 @@ struct InnerState {
     local_release_generation: u64,
     sessions: SessionRegistry,
     emergency_release_generation: u64,
+    host_latency_ms: Option<u64>,
 }
 
 impl SharedState {
@@ -101,6 +105,7 @@ impl SharedState {
                     local_release_generation: 0,
                     sessions: SessionRegistry::default(),
                     emergency_release_generation: 0,
+                    host_latency_ms: None,
                 }),
                 stop: AtomicBool::new(false),
             }),
@@ -120,6 +125,7 @@ impl SharedState {
         inner.remote_sender = None;
         inner.remote_sender_generation = inner.remote_sender_generation.wrapping_add(1);
         inner.sessions.clear();
+        inner.host_latency_ms = None;
         inner.config.last_mode = AppMode::Idle.as_str().to_string();
         inner.config.save();
         push_log(&mut inner.logs, "[应用] 已停止\n".to_string());
@@ -138,6 +144,7 @@ impl SharedState {
             local_device_name: crate::config::computer_name(),
             active_device_id,
             devices,
+            host_latency_ms: inner.host_latency_ms,
             elevated: crate::elevation::is_elevated(),
             logs: inner.logs.iter().cloned().collect(),
             config: inner.config.clone(),
@@ -177,6 +184,7 @@ impl AppRuntime {
         inner.config.last_mode = mode.as_str().to_string();
         inner.config.save();
         inner.sessions.clear();
+        inner.host_latency_ms = None;
         push_log(
             &mut inner.logs,
             format!("[应用] 已启动{}模式\n", mode.label()),
@@ -194,6 +202,21 @@ impl AppRuntime {
     pub fn set_connected(&self, connected: bool) {
         let mut inner = self.state.lock().expect("state lock poisoned");
         inner.connected = connected;
+        if !connected {
+            inner.host_latency_ms = None;
+        }
+    }
+
+    pub fn record_host_latency(&self, sample_ms: u64) {
+        let mut inner = self.state.lock().expect("state lock poisoned");
+        inner.host_latency_ms = Some(smooth_latency(inner.host_latency_ms, sample_ms));
+    }
+
+    pub fn record_session_latency(&self, device_id: &str, generation: u64, sample_ms: u64) -> bool {
+        let mut inner = self.state.lock().expect("state lock poisoned");
+        inner
+            .sessions
+            .record_latency(device_id, generation, sample_ms)
     }
 
     pub fn set_target(&self, target: KeyboardTarget) {
@@ -421,5 +444,19 @@ mod tests {
         runtime.set_device_alias("device-a", Some("Studio PC".to_string()));
 
         assert_eq!(state.snapshot().devices[0].name, "Studio PC");
+    }
+
+    #[test]
+    fn remote_host_latency_is_smoothed_and_cleared_with_connection() {
+        let state = SharedState::new("test");
+        let runtime = state.runtime();
+
+        runtime.set_connected(true);
+        runtime.record_host_latency(8);
+        runtime.record_host_latency(12);
+        assert_eq!(state.snapshot().host_latency_ms, Some(9));
+
+        runtime.set_connected(false);
+        assert_eq!(state.snapshot().host_latency_ms, None);
     }
 }
