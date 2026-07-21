@@ -242,6 +242,8 @@ fn handle_host_connection(
         return Ok(());
     }
 
+    let supports_server_hello = capabilities.iter().any(|value| value == "server_hello_v1");
+
     stream.set_read_timeout(None)?;
     let (outbound_tx, outbound_rx) = mpsc::channel::<BridgeEvent>();
     let registration = runtime.register_session(
@@ -255,20 +257,29 @@ fn handle_host_connection(
     let acceptance = match registration {
         RegisterResult::Accepted(acceptance) => acceptance,
         RegisterResult::Rejected(reason) => {
-            stream.write_all(&encode_event(&BridgeEvent::ServerHello {
-                accepted: false,
-                reason: Some(reason.clone()),
-                max_devices: MAX_REMOTE_DEVICES as u8,
-            })?)?;
+            if supports_server_hello {
+                stream.write_all(&encode_event(&BridgeEvent::ServerHello {
+                    accepted: false,
+                    reason: Some(reason.clone()),
+                    max_devices: MAX_REMOTE_DEVICES as u8,
+                })?)?;
+            }
             runtime.log(format!("[host] rejected client {address}: {reason}\n"));
             return Ok(());
         }
     };
-    stream.write_all(&encode_event(&BridgeEvent::ServerHello {
-        accepted: true,
-        reason: None,
-        max_devices: MAX_REMOTE_DEVICES as u8,
-    })?)?;
+    let handshake_response = if supports_server_hello {
+        BridgeEvent::ServerHello {
+            accepted: true,
+            reason: None,
+            max_devices: MAX_REMOTE_DEVICES as u8,
+        }
+    } else {
+        BridgeEvent::Ping {
+            message: "ok".to_string(),
+        }
+    };
+    stream.write_all(&encode_event(&handshake_response)?)?;
 
     let device_id = acceptance.device_id;
     let generation = acceptance.generation;
@@ -608,7 +619,10 @@ mod tests {
                     role: crate::protocol::ClientRole::Remote,
                     device_id: Some(device_id.to_string()),
                     device_name: Some(device_id.to_string()),
-                    capabilities: vec!["multi_remote_v1".to_string()],
+                    capabilities: vec![
+                        "multi_remote_v1".to_string(),
+                        "server_hello_v1".to_string(),
+                    ],
                 })
                 .unwrap(),
             )
@@ -670,6 +684,44 @@ mod tests {
 
         drop((client_a, client_b, client_c));
         accept_thread.join().unwrap();
+    }
+
+    #[test]
+    fn loopback_host_replies_with_legacy_ping_before_old_client_updates() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let state = crate::app_state::SharedState::new("test");
+        let runtime = state.runtime();
+        let (event_tx, _event_rx) = mpsc::channel();
+        let handler = thread::spawn(move || {
+            let (stream, peer) = listener.accept().unwrap();
+            handle_host_connection(runtime, stream, peer, event_tx).unwrap();
+        });
+
+        let mut stream = TcpStream::connect(address).unwrap();
+        stream
+            .write_all(
+                &encode_event(&BridgeEvent::ClientHello {
+                    role: crate::protocol::ClientRole::Remote,
+                    device_id: None,
+                    device_name: None,
+                    capabilities: Vec::new(),
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+
+        assert!(matches!(
+            decode_event(line.as_bytes()).unwrap(),
+            BridgeEvent::Ping { .. }
+        ));
+
+        drop(reader);
+        drop(stream);
+        handler.join().unwrap();
     }
 
     #[test]
