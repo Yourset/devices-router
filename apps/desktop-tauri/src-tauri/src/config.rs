@@ -1,4 +1,6 @@
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -35,6 +37,8 @@ pub struct AppConfig {
     pub discovery_port: u16,
     pub update_port: u16,
     pub remote_host: Option<String>,
+    pub device_id: String,
+    pub device_aliases: BTreeMap<String, String>,
     pub mouse_follow: MouseFollowConfig,
     pub mouse_sensitivity: String,
     pub startup_mode: String,
@@ -57,6 +61,8 @@ impl Default for AppConfig {
             discovery_port: 8766,
             update_port: 8767,
             remote_host: None,
+            device_id: generate_device_id(),
+            device_aliases: BTreeMap::new(),
             mouse_follow: MouseFollowConfig::default(),
             mouse_sensitivity: "balanced".to_string(),
             startup_mode: "last".to_string(),
@@ -77,15 +83,29 @@ impl AppConfig {
     pub fn load() -> Self {
         let path = config_path();
         let Ok(payload) = fs::read(&path) else {
-            return Self::default();
+            let config = Self::default();
+            if !cfg!(test) {
+                config.save();
+            }
+            return config;
         };
+        let had_device_id = serde_json::from_slice::<serde_json::Value>(strip_utf8_bom(&payload))
+            .ok()
+            .and_then(|value| value.get("deviceId").cloned())
+            .is_some();
         let mut config: Self = serde_json::from_slice(strip_utf8_bom(&payload)).unwrap_or_default();
         config.normalize();
+        if !had_device_id && !cfg!(test) {
+            config.save();
+        }
         config
     }
 
     pub fn save(&self) {
         let path = config_path();
+        if cfg!(test) {
+            return;
+        }
         if let Some(parent) = path.parent() {
             let _ = fs::create_dir_all(parent);
         }
@@ -95,6 +115,9 @@ impl AppConfig {
     }
 
     fn normalize(&mut self) {
+        if self.device_id.trim().is_empty() {
+            self.device_id = generate_device_id();
+        }
         self.experimental_mouse_input = false;
         self.mouse_input_initialized = true;
         self.mouse_follow.enabled = true;
@@ -162,6 +185,27 @@ pub fn apply_mouse_sensitivity(mouse: &mut MouseFollowConfig, preset: &str) {
     }
 }
 
+pub fn computer_name() -> String {
+    std::env::var("COMPUTERNAME")
+        .ok()
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| "Windows-PC".to_string())
+}
+
+fn generate_device_id() -> String {
+    let seed = format!(
+        "devices-router-v1|{}|{}|{}",
+        computer_name(),
+        std::env::var("USERNAME").unwrap_or_default(),
+        std::env::var("USERPROFILE").unwrap_or_default()
+    );
+    let digest = Sha256::digest(seed.as_bytes());
+    digest[..16]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
 pub fn app_data_dir() -> PathBuf {
     std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
@@ -180,6 +224,7 @@ fn strip_utf8_bom(payload: &[u8]) -> &[u8] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
 
     #[test]
     fn default_config_remembers_idle_mode() {
@@ -251,5 +296,39 @@ mod tests {
         assert!(!config.experimental_mouse_input);
         assert!(config.mouse_follow.enabled);
         assert!(config.mouse_input_initialized);
+    }
+
+    #[test]
+    fn old_config_gains_stable_device_identity_without_losing_fields() {
+        let payload = r#"{
+            "remoteHost": "192.168.1.20",
+            "startupMode": "remote",
+            "mouseSensitivity": "sensitive"
+        }"#;
+        let mut config: AppConfig = serde_json::from_str(payload).unwrap();
+
+        config.normalize();
+        let first_id = config.device_id.clone();
+        config.normalize();
+
+        assert!(!first_id.is_empty());
+        assert_eq!(config.device_id, first_id);
+        assert_eq!(config.remote_host.as_deref(), Some("192.168.1.20"));
+        assert_eq!(config.startup_mode, "remote");
+        assert_eq!(config.mouse_sensitivity, "sensitive");
+    }
+
+    #[test]
+    fn device_aliases_default_to_empty_and_round_trip() {
+        let mut config = AppConfig::default();
+        assert_eq!(config.device_aliases, BTreeMap::new());
+
+        config
+            .device_aliases
+            .insert("device-a".to_string(), "Studio PC".to_string());
+        let payload = serde_json::to_string(&config).unwrap();
+        let restored: AppConfig = serde_json::from_str(&payload).unwrap();
+
+        assert_eq!(restored.device_aliases["device-a"], "Studio PC");
     }
 }

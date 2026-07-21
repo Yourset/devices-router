@@ -1,3 +1,4 @@
+mod activity_transport;
 mod app_state;
 mod config;
 mod core;
@@ -5,10 +6,15 @@ mod discovery;
 mod elevation;
 mod input;
 mod keyboard_hook;
+mod latency;
 mod mouse;
 mod mouse_hook;
+mod multi_host;
 mod protocol;
+mod routing;
+mod sessions;
 mod startup;
+mod transport;
 mod tray;
 mod updates;
 
@@ -31,7 +37,7 @@ struct NetworkDiagnostics {
     auto_discovery: bool,
     running_mode: String,
     connected: bool,
-    keyboard_target: KeyboardTarget,
+    keyboard_target: String,
     target_host: Option<String>,
     tcp_reachable: Option<bool>,
     update_reachable: Option<bool>,
@@ -88,7 +94,7 @@ fn set_keyboard_target(target: String, state: tauri::State<SharedState>) -> Resu
     let target = match target.as_str() {
         "local" => KeyboardTarget::Local,
         "remote" => KeyboardTarget::Remote,
-        other => return Err(format!("Unsupported keyboard target: {other}")),
+        other => KeyboardTarget::Device(other.to_string()),
     };
     let runtime = state.runtime();
     let mode = AppMode::from_str(&state.snapshot().mode).unwrap_or(AppMode::Idle);
@@ -96,6 +102,7 @@ fn set_keyboard_target(target: String, state: tauri::State<SharedState>) -> Resu
         let target_side = match target {
             KeyboardTarget::Local => TargetSide::Local,
             KeyboardTarget::Remote => TargetSide::Remote,
+            KeyboardTarget::Device(_) => TargetSide::Remote,
         };
         let label = keyboard_target_label(target);
         if runtime.send_remote_event(BridgeEvent::TargetRequest {
@@ -109,16 +116,33 @@ fn set_keyboard_target(target: String, state: tauri::State<SharedState>) -> Resu
         return Ok(());
     }
 
+    if let KeyboardTarget::Device(device_id) = &target {
+        if !runtime.session_is_current(device_id) {
+            return Err("two remote device limit reached".to_string());
+        }
+    }
     if target == KeyboardTarget::Local {
         core::force_local_release(&runtime, "[主电脑] 手动安全释放：键盘已回到主电脑\n");
     } else {
-        runtime.set_target(target);
-        keyboard_hook::set_key_suppression(true);
+        multi_host::switch_target(&runtime, target.clone(), "[host] keyboard target changed\n");
     }
     runtime.log(format!(
         "[主电脑] 键盘目标已手动切到：{}\n",
         keyboard_target_label(target)
     ));
+    Ok(())
+}
+
+#[tauri::command]
+fn set_device_alias(
+    device_id: String,
+    alias: Option<String>,
+    state: tauri::State<SharedState>,
+) -> Result<(), String> {
+    if device_id.trim().is_empty() {
+        return Err("device ID cannot be empty".to_string());
+    }
+    state.runtime().set_device_alias(&device_id, alias);
     Ok(())
 }
 
@@ -129,8 +153,8 @@ fn release_control(state: tauri::State<SharedState>) {
 
 fn keyboard_target_label(target: KeyboardTarget) -> &'static str {
     match target {
-        KeyboardTarget::Local => "主电脑",
-        KeyboardTarget::Remote => "副电脑",
+        KeyboardTarget::Local => "\u{4e3b}\u{7535}\u{8111}",
+        KeyboardTarget::Remote | KeyboardTarget::Device(_) => "\u{526f}\u{7535}\u{8111}",
     }
 }
 
@@ -341,6 +365,7 @@ pub fn run() {
             clear_logs,
             set_remote_host,
             set_keyboard_target,
+            set_device_alias,
             release_control,
             set_theme,
             set_start_on_login,

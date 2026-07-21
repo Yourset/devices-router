@@ -1,0 +1,1280 @@
+use crate::activity_transport::{
+    spawn_host_activity_listener, ActivityDatagramOutcome, UDP_ACTIVITY_CAPABILITY,
+};
+use crate::app_state::AppRuntime;
+use crate::discovery::broadcast_host;
+use crate::input::release_local_modifiers;
+use crate::keyboard_hook::{
+    run_keyboard_hook, set_key_suppression, take_panic_request, RawKeyEvent,
+};
+use crate::latency::{LatencyProbeTracker, LinkStats, HOST_LATENCY_CAPABILITY};
+use crate::mouse::cursor_position;
+use crate::mouse_hook::set_mouse_input_suppression;
+use crate::protocol::{
+    decode_event, encode_event, BridgeEvent, KeyAction, MouseButton, MouseButtonAction, TargetSide,
+};
+use crate::routing::{ActivityArbiter, KeyboardTarget};
+use crate::sessions::{RegisterResult, SessionIdentity, MAX_REMOTE_DEVICES};
+use crate::transport::{
+    background_send_after_outbound, background_send_due, background_send_wait,
+    configure_control_stream, BackgroundSendDue,
+};
+use crate::updates::start_update_server;
+use anyhow::{Context, Result};
+use std::io::{BufRead, BufReader, Write};
+use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
+
+const TCP_PORT: u16 = 8765;
+const ACTIVITY_PORT: u16 = 8766;
+const LOOP_INTERVAL: Duration = Duration::from_millis(5);
+const EMERGENCY_ACTIVITY_BLOCK: Duration = Duration::from_secs(1);
+
+enum HostEvent {
+    RemoteActivity {
+        device_id: String,
+        generation: u64,
+    },
+    TargetRequest {
+        device_id: String,
+        generation: u64,
+        target: TargetSide,
+    },
+    Disconnected {
+        device_id: String,
+        generation: u64,
+        reason: String,
+    },
+}
+
+pub(crate) fn run(runtime: Arc<AppRuntime>) -> Result<()> {
+    let (key_tx, key_rx) = mpsc::channel::<RawKeyEvent>();
+    let keyboard_runtime = Arc::clone(&runtime);
+    thread::Builder::new()
+        .name("devices-router-keyboard-hook".to_string())
+        .spawn(move || {
+            if let Err(err) = run_keyboard_hook(key_tx) {
+                keyboard_runtime.log(format!("[host] keyboard hook failed: {err:#}\n"));
+            }
+        })
+        .context("spawn keyboard hook thread")?;
+
+    let discovery_runtime = Arc::clone(&runtime);
+    thread::Builder::new()
+        .name("devices-router-discovery-broadcast".to_string())
+        .spawn(move || {
+            let stop_runtime = Arc::clone(&discovery_runtime);
+            if let Err(err) = broadcast_host(move || stop_runtime.should_stop(), TCP_PORT) {
+                discovery_runtime.log(format!("[host] discovery broadcast failed: {err:#}\n"));
+            }
+        })
+        .context("spawn discovery broadcaster")?;
+
+    let update_runtime = Arc::clone(&runtime);
+    let update_port = runtime.config().update_port;
+    thread::Builder::new()
+        .name("devices-router-update-server".to_string())
+        .spawn(move || {
+            if let Err(err) = start_update_server(update_runtime.clone(), update_port) {
+                update_runtime.log(format!("[host] update server failed: {err:#}\n"));
+            }
+        })
+        .context("spawn update server")?;
+
+    let (host_event_tx, host_event_rx) = mpsc::channel::<HostEvent>();
+    spawn_host_mouse_activity(runtime.clone(), host_event_tx.clone())?;
+    let activity_runtime = runtime.clone();
+    let activity_event_tx = host_event_tx.clone();
+    if let Err(err) =
+        spawn_host_activity_listener(activity_runtime.clone(), move |outcome| match outcome {
+            ActivityDatagramOutcome::HelloAccepted {
+                device_id,
+                generation: _,
+            } => {
+                if let Some(sender) = activity_runtime.session_sender(&device_id) {
+                    let _ = sender.send(BridgeEvent::ActivityChannelState { active: true });
+                }
+            }
+            ActivityDatagramOutcome::ActivityAccepted {
+                device_id,
+                generation,
+                ..
+            } => {
+                let _ = activity_event_tx.send(HostEvent::RemoteActivity {
+                    device_id,
+                    generation,
+                });
+            }
+        })
+    {
+        runtime.log(format!(
+            "[host] udp activity listener unavailable: {err:#}\n"
+        ));
+    }
+
+    let listener = TcpListener::bind(("0.0.0.0", TCP_PORT)).context("bind host TCP listener")?;
+    listener
+        .set_nonblocking(true)
+        .context("set host listener nonblocking")?;
+    runtime.log(format!(
+        "[host] listening on 0.0.0.0:{TCP_PORT}; waiting for remote computers\n"
+    ));
+
+    let now = Instant::now();
+    let mut arbiter = ActivityArbiter::ready(
+        KeyboardTarget::Local,
+        Duration::from_millis(runtime.config().mouse_follow.switch_debounce_ms),
+        now,
+    );
+    let mut ctrl_down = false;
+    let mut alt_down = false;
+    let mut forwarded_key_logs = 0_u8;
+    let mut emergency_block_until = now;
+
+    while !runtime.should_stop() {
+        loop {
+            match listener.accept() {
+                Ok((stream, address)) => {
+                    spawn_host_connection(runtime.clone(), stream, address, host_event_tx.clone());
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(err) => return Err(err).context("accept host client"),
+            }
+        }
+
+        if take_panic_request() {
+            crate::core::force_local_release(
+                &runtime,
+                "[safety] Ctrl+Alt+Esc returned keyboard to host\n",
+            );
+            arbiter.force(KeyboardTarget::Local, Instant::now());
+            emergency_block_until = Instant::now() + EMERGENCY_ACTIVITY_BLOCK;
+        }
+
+        while let Ok(event) = key_rx.try_recv() {
+            handle_key_event(
+                &runtime,
+                &mut arbiter,
+                event,
+                &mut ctrl_down,
+                &mut alt_down,
+                &mut forwarded_key_logs,
+            );
+        }
+
+        while let Ok(event) = host_event_rx.try_recv() {
+            handle_host_event(&runtime, &mut arbiter, event, emergency_block_until);
+        }
+
+        if let Some(target) = arbiter.poll(Instant::now()) {
+            switch_target(
+                &runtime,
+                target,
+                "[host] keyboard followed latest mouse activity\n",
+            );
+        }
+        thread::sleep(LOOP_INTERVAL);
+    }
+
+    switch_target(
+        &runtime,
+        KeyboardTarget::Local,
+        "[host] stopped and returned keyboard to host\n",
+    );
+    Ok(())
+}
+
+fn spawn_host_mouse_activity(
+    runtime: Arc<AppRuntime>,
+    event_tx: mpsc::Sender<HostEvent>,
+) -> Result<()> {
+    thread::Builder::new()
+        .name("devices-router-host-mouse".to_string())
+        .spawn(move || {
+            let Ok(mut last) = cursor_position() else {
+                runtime.log("[host] keyboard target changed\n");
+                return;
+            };
+            while !runtime.should_stop() {
+                let config = runtime.config();
+                thread::sleep(Duration::from_millis(
+                    config.mouse_follow.host_poll_interval_ms,
+                ));
+                if !config.mouse_follow.enabled
+                    || !config.mouse_follow.host_mouse_returns_local
+                    || config.game_mode
+                {
+                    continue;
+                }
+                let Ok(current) = cursor_position() else {
+                    continue;
+                };
+                if current != last {
+                    last = current;
+                    if event_tx
+                        .send(HostEvent::TargetRequest {
+                            device_id: String::new(),
+                            generation: 0,
+                            target: TargetSide::Local,
+                        })
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            }
+        })
+        .context("spawn host mouse activity thread")?;
+    Ok(())
+}
+
+fn spawn_host_connection(
+    runtime: Arc<AppRuntime>,
+    stream: TcpStream,
+    address: SocketAddr,
+    event_tx: mpsc::Sender<HostEvent>,
+) {
+    let _ = thread::Builder::new()
+        .name(format!("devices-router-host-client-{}", address.ip()))
+        .spawn(move || {
+            if let Err(err) = handle_host_connection(runtime.clone(), stream, address, event_tx) {
+                runtime.log(format!("[host] client {address} failed: {err:#}\n"));
+            }
+        });
+}
+
+fn handle_host_connection(
+    runtime: Arc<AppRuntime>,
+    mut stream: TcpStream,
+    address: SocketAddr,
+    event_tx: mpsc::Sender<HostEvent>,
+) -> Result<()> {
+    configure_control_stream(&stream).context("configure host control stream")?;
+    stream
+        .set_nonblocking(false)
+        .context("set client stream blocking")?;
+    stream
+        .set_read_timeout(Some(Duration::from_millis(900)))
+        .context("client handshake stream")?;
+    let mut handshake_reader =
+        BufReader::new(stream.try_clone().context("client handshake stream")?);
+    let mut line = String::new();
+    if handshake_reader.read_line(&mut line)? == 0 {
+        return Ok(());
+    }
+    let BridgeEvent::ClientHello {
+        device_id,
+        device_name,
+        capabilities,
+        ..
+    } = decode_event(line.as_bytes())?
+    else {
+        return Ok(());
+    };
+
+    if capabilities.iter().any(|value| value == "discovery_probe") {
+        stream.write_all(&encode_event(&BridgeEvent::Ping {
+            message: "ok".to_string(),
+            probe_id: None,
+            reply_to: None,
+        })?)?;
+        return Ok(());
+    }
+
+    let supports_server_hello = capabilities.iter().any(|value| value == "server_hello_v1");
+
+    stream.set_read_timeout(None)?;
+    let (outbound_tx, outbound_rx) = mpsc::channel::<BridgeEvent>();
+    let supports_udp_activity = capabilities
+        .iter()
+        .any(|value| value == UDP_ACTIVITY_CAPABILITY);
+    let supports_host_latency = capabilities
+        .iter()
+        .any(|value| value == HOST_LATENCY_CAPABILITY);
+    let registration = if supports_udp_activity {
+        runtime.register_session_with_activity_support(
+            SessionIdentity {
+                device_id,
+                device_name,
+                address: address.to_string(),
+            },
+            outbound_tx.clone(),
+            true,
+        )
+    } else {
+        runtime.register_session(
+            SessionIdentity {
+                device_id,
+                device_name,
+                address: address.to_string(),
+            },
+            outbound_tx.clone(),
+        )
+    };
+    let acceptance = match registration {
+        RegisterResult::Accepted(acceptance) => acceptance,
+        RegisterResult::Rejected(reason) => {
+            if supports_server_hello {
+                stream.write_all(&encode_event(&BridgeEvent::ServerHello {
+                    accepted: false,
+                    reason: Some(reason.clone()),
+                    max_devices: MAX_REMOTE_DEVICES as u8,
+                    capabilities: Vec::new(),
+                    activity_token: None,
+                    activity_port: None,
+                })?)?;
+            }
+            runtime.log(format!("[host] rejected client {address}: {reason}\n"));
+            return Ok(());
+        }
+    };
+    let handshake_response = if supports_server_hello {
+        let mut negotiated_capabilities = Vec::new();
+        if supports_udp_activity {
+            negotiated_capabilities.push(UDP_ACTIVITY_CAPABILITY.to_string());
+        }
+        if supports_host_latency {
+            negotiated_capabilities.push(HOST_LATENCY_CAPABILITY.to_string());
+        }
+        BridgeEvent::ServerHello {
+            accepted: true,
+            reason: None,
+            max_devices: MAX_REMOTE_DEVICES as u8,
+            capabilities: negotiated_capabilities,
+            activity_token: acceptance.activity_token.clone(),
+            activity_port: supports_udp_activity.then_some(ACTIVITY_PORT),
+        }
+    } else {
+        BridgeEvent::Ping {
+            message: "ok".to_string(),
+            probe_id: None,
+            reply_to: None,
+        }
+    };
+    stream.write_all(&encode_event(&handshake_response)?)?;
+
+    let device_id = acceptance.device_id;
+    let generation = acceptance.generation;
+    runtime.log(format!(
+        "[host] remote connected: {address}, device={device_id} {}\n",
+        if acceptance.replaced {
+            "replaced stale connection"
+        } else {
+            ""
+        }
+    ));
+    send_target_state_to_device(&runtime, &device_id);
+
+    let mut writer = stream.try_clone().context("clone host writer stream")?;
+    let writer_events = event_tx.clone();
+    let writer_device_id = device_id.clone();
+    let writer_runtime = Arc::clone(&runtime);
+    let latency_tracker = Arc::new(Mutex::new(LatencyProbeTracker::default()));
+    let writer_latency_tracker = Arc::clone(&latency_tracker);
+    thread::Builder::new()
+        .name(format!("devices-router-host-writer-{device_id}"))
+        .spawn(move || {
+            let mut last_outbound = Instant::now();
+            let mut last_probe = Instant::now();
+            loop {
+                let timeout = background_send_wait(last_outbound, last_probe, Instant::now());
+                let result = match outbound_rx.recv_timeout(timeout) {
+                    Ok(event) => encode_event(&event).and_then(|bytes| {
+                        writer.write_all(&bytes)?;
+                        let sent_at = Instant::now();
+                        last_outbound = sent_at;
+                        if matches!(
+                            background_send_after_outbound(last_outbound, last_probe, sent_at),
+                            Some(BackgroundSendDue::Probe)
+                        ) {
+                            let probe_sent_at = Instant::now();
+                            let (probe_id, stats_update) = start_host_latency_probe(
+                                &writer_latency_tracker,
+                                &writer_runtime,
+                                &writer_device_id,
+                                generation,
+                                probe_sent_at,
+                            );
+                            if supports_host_latency {
+                                if let Some(stats) = stats_update {
+                                    writer.write_all(&encode_event(&link_stats_event(&stats))?)?;
+                                }
+                            }
+                            let probe = BridgeEvent::Ping {
+                                message: "latency-probe".to_string(),
+                                probe_id: Some(probe_id),
+                                reply_to: None,
+                            };
+                            writer.write_all(&encode_event(&probe)?)?;
+                            last_outbound = probe_sent_at;
+                            last_probe = probe_sent_at;
+                        }
+                        Ok(())
+                    }),
+                    Err(RecvTimeoutError::Timeout) => {
+                        match background_send_due(last_outbound, last_probe, Instant::now()) {
+                            Some(BackgroundSendDue::Heartbeat) => {
+                                let heartbeat = BridgeEvent::Ping {
+                                    message: "host-heartbeat".to_string(),
+                                    probe_id: None,
+                                    reply_to: None,
+                                };
+                                encode_event(&heartbeat).and_then(|bytes| {
+                                    writer.write_all(&bytes)?;
+                                    last_outbound = Instant::now();
+                                    Ok(())
+                                })
+                            }
+                            Some(BackgroundSendDue::Probe) => {
+                                let now = Instant::now();
+                                let (probe_id, stats_update) = start_host_latency_probe(
+                                    &writer_latency_tracker,
+                                    &writer_runtime,
+                                    &writer_device_id,
+                                    generation,
+                                    now,
+                                );
+                                let stats_result = if supports_host_latency {
+                                    stats_update.map_or(Ok(()), |stats| {
+                                        encode_event(&link_stats_event(&stats)).and_then(|bytes| {
+                                            writer.write_all(&bytes)?;
+                                            Ok(())
+                                        })
+                                    })
+                                } else {
+                                    Ok(())
+                                };
+                                let probe = BridgeEvent::Ping {
+                                    message: "latency-probe".to_string(),
+                                    probe_id: Some(probe_id),
+                                    reply_to: None,
+                                };
+                                stats_result.and_then(|_| {
+                                    encode_event(&probe).and_then(|bytes| {
+                                        writer.write_all(&bytes)?;
+                                        last_outbound = now;
+                                        last_probe = now;
+                                        Ok(())
+                                    })
+                                })
+                            }
+                            None => Ok(()),
+                        }
+                    }
+                    Err(RecvTimeoutError::Disconnected) => break,
+                };
+                if let Err(err) = result {
+                    let _ = writer_events.send(HostEvent::Disconnected {
+                        device_id: writer_device_id.clone(),
+                        generation,
+                        reason: format!("write failed: {err:#}"),
+                    });
+                    break;
+                }
+            }
+        })
+        .context("spawn host writer thread")?;
+
+    let mut reader = BufReader::new(stream);
+    loop {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) => break,
+            Ok(_) => match decode_event(line.as_bytes()) {
+                Ok(BridgeEvent::MouseActivity {
+                    activity_id,
+                    target_epoch,
+                    ..
+                }) => {
+                    if !handle_tcp_mouse_activity(
+                        &runtime,
+                        &event_tx,
+                        &device_id,
+                        generation,
+                        activity_id,
+                        target_epoch,
+                    ) {
+                        continue;
+                    }
+                }
+                Ok(BridgeEvent::TargetRequest { target }) => {
+                    if event_tx
+                        .send(HostEvent::TargetRequest {
+                            device_id: device_id.clone(),
+                            generation,
+                            target,
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                Ok(BridgeEvent::Ping {
+                    probe_id, reply_to, ..
+                }) => {
+                    if let Some(probe_id) = probe_id {
+                        let _ = outbound_tx.send(BridgeEvent::Ping {
+                            message: "latency-reply".to_string(),
+                            probe_id: None,
+                            reply_to: Some(probe_id),
+                        });
+                    }
+                    if let Some(reply_to) = reply_to {
+                        let stats = {
+                            let mut tracker = latency_tracker
+                                .lock()
+                                .expect("latency tracker lock poisoned");
+                            tracker
+                                .complete_probe(reply_to, Instant::now())
+                                .map(|_| tracker.stats())
+                        };
+                        if let Some(stats) = stats {
+                            if runtime.record_session_link_stats(
+                                &device_id,
+                                generation,
+                                stats.clone(),
+                            ) && supports_host_latency
+                            {
+                                let _ = outbound_tx.send(link_stats_event(&stats));
+                            }
+                        }
+                    }
+                }
+                Ok(other) => runtime.log(format!(
+                    "[host] ignored message from {device_id}: {other:?}\n"
+                )),
+                Err(err) => runtime.log(format!(
+                    "[host] invalid message from {device_id}: {err:#}\n"
+                )),
+            },
+            Err(err) => {
+                let _ = event_tx.send(HostEvent::Disconnected {
+                    device_id: device_id.clone(),
+                    generation,
+                    reason: format!("read failed: {err}"),
+                });
+                return Ok(());
+            }
+        }
+    }
+    let _ = event_tx.send(HostEvent::Disconnected {
+        device_id,
+        generation,
+        reason: "connection closed".to_string(),
+    });
+    Ok(())
+}
+
+fn start_host_latency_probe(
+    tracker: &Arc<Mutex<LatencyProbeTracker>>,
+    runtime: &Arc<AppRuntime>,
+    device_id: &str,
+    generation: u64,
+    now: Instant,
+) -> (u64, Option<LinkStats>) {
+    let (probe_id, stats) = {
+        let mut tracker = tracker.lock().expect("latency tracker lock poisoned");
+        let probe_id = tracker.start_probe(now);
+        (probe_id, tracker.stats())
+    };
+    let stats_update = (stats != LinkStats::default()).then_some(stats);
+    if let Some(stats) = &stats_update {
+        runtime.record_session_link_stats(device_id, generation, stats.clone());
+    }
+    (probe_id, stats_update)
+}
+
+fn link_stats_event(stats: &LinkStats) -> BridgeEvent {
+    BridgeEvent::LinkStatsState {
+        current_rtt_ms: stats.current_rtt_ms,
+        median_rtt_ms: stats.median_rtt_ms,
+        jitter_ms: stats.jitter_ms,
+        loss_percent: Some(u64::from(stats.loss_percent)),
+        sample_count: u8::try_from(stats.sample_count).unwrap_or(u8::MAX),
+    }
+}
+
+fn handle_host_event(
+    runtime: &Arc<AppRuntime>,
+    arbiter: &mut ActivityArbiter,
+    event: HostEvent,
+    emergency_block_until: Instant,
+) {
+    match event {
+        HostEvent::RemoteActivity {
+            device_id,
+            generation,
+        } => {
+            let now = Instant::now();
+            if now < emergency_block_until
+                || !runtime.session_generation_matches(&device_id, generation)
+            {
+                return;
+            }
+            let config = runtime.config();
+            if !config.mouse_follow.enabled
+                || !config.mouse_follow.remote_mouse_switches_remote
+                || config.game_mode
+            {
+                return;
+            }
+            runtime.mark_session_activity(&device_id, now);
+            if let Some(target) = arbiter.observe(KeyboardTarget::Device(device_id.clone()), now) {
+                switch_target(
+                    runtime,
+                    target,
+                    &format!("[host] mouse activity selected {device_id}\n"),
+                );
+            }
+        }
+        HostEvent::TargetRequest {
+            device_id,
+            generation,
+            target,
+        } => {
+            if generation != 0 && !runtime.session_generation_matches(&device_id, generation) {
+                return;
+            }
+            let now = Instant::now();
+            let requested = requested_target(target, &device_id);
+            arbiter.force(requested.clone(), now);
+            switch_target(runtime, requested, "[host] keyboard target changed\n");
+        }
+        HostEvent::Disconnected {
+            device_id,
+            generation,
+            reason,
+        } => {
+            if !runtime.remove_session(&device_id, generation) {
+                return;
+            }
+            runtime.log(format!(
+                "[host] remote disconnected: {device_id}; {reason}\n"
+            ));
+            let target = target_after_disconnect(&runtime.target(), &device_id);
+            if target == KeyboardTarget::Local {
+                arbiter.force(KeyboardTarget::Local, Instant::now());
+                switch_target(
+                    runtime,
+                    KeyboardTarget::Local,
+                    "[safety] active remote disconnected; keyboard returned to host\n",
+                );
+            } else {
+                broadcast_target_states(runtime);
+            }
+        }
+    }
+}
+
+fn handle_key_event(
+    runtime: &Arc<AppRuntime>,
+    arbiter: &mut ActivityArbiter,
+    event: RawKeyEvent,
+    ctrl_down: &mut bool,
+    alt_down: &mut bool,
+    forwarded_key_logs: &mut u8,
+) {
+    update_modifier_state(&event, ctrl_down, alt_down);
+    if event.is_down && *ctrl_down && *alt_down {
+        let target = match event.vk_code {
+            0x31 => Some(KeyboardTarget::Local),
+            0x32 => runtime.first_session_id().map(KeyboardTarget::Device),
+            0x33 => {
+                let mut ids = runtime
+                    .session_senders()
+                    .into_iter()
+                    .map(|(id, _)| id)
+                    .collect::<Vec<_>>();
+                ids.sort();
+                ids.into_iter().nth(1).map(KeyboardTarget::Device)
+            }
+            _ => None,
+        };
+        if let Some(target) = target {
+            arbiter.force(target.clone(), Instant::now());
+            switch_target(runtime, target, "[host] keyboard target changed\n");
+            return;
+        }
+    }
+
+    let KeyboardTarget::Device(device_id) = runtime.target() else {
+        return;
+    };
+    let payload = BridgeEvent::Key {
+        action: if event.is_down {
+            KeyAction::Down
+        } else {
+            KeyAction::Up
+        },
+        key: format!("<{}>", event.vk_code),
+    };
+    let sent = runtime
+        .session_sender(&device_id)
+        .is_some_and(|sender| sender.send(payload).is_ok());
+    if !sent {
+        arbiter.force(KeyboardTarget::Local, Instant::now());
+        switch_target(
+            runtime,
+            KeyboardTarget::Local,
+            "[safety] send failed; keyboard returned to host\n",
+        );
+    } else if *forwarded_key_logs < 5 {
+        *forwarded_key_logs += 1;
+        runtime.log(format!("[host] forwarded key to {device_id}\n"));
+    }
+}
+
+pub(crate) fn switch_target(
+    runtime: &Arc<AppRuntime>,
+    requested: KeyboardTarget,
+    log_line: &str,
+) -> bool {
+    let target = match requested {
+        KeyboardTarget::Remote => runtime
+            .first_session_id()
+            .map(KeyboardTarget::Device)
+            .unwrap_or(KeyboardTarget::Local),
+        KeyboardTarget::Device(device_id) if runtime.session_sender(&device_id).is_none() => {
+            KeyboardTarget::Local
+        }
+        other => other,
+    };
+    let previous = runtime.target();
+    if previous == target {
+        return false;
+    }
+    if let KeyboardTarget::Device(device_id) = &previous {
+        release_remote_inputs(runtime, device_id);
+    }
+    if target.is_remote() {
+        if let Err(err) = release_local_modifiers() {
+            runtime.log(format!(
+                "[host] failed to release local modifiers: {err:#}\n"
+            ));
+        }
+    }
+    runtime.set_host_target(target.clone());
+    if target == KeyboardTarget::Local {
+        runtime.mark_local_release();
+    }
+    set_key_suppression(target.is_remote());
+    set_mouse_input_suppression(false);
+    broadcast_target_states(runtime);
+    runtime.log(log_line);
+    true
+}
+
+fn broadcast_target_states(runtime: &Arc<AppRuntime>) {
+    let target = runtime.target();
+    for (device_id, sender) in runtime.session_senders() {
+        let _ = sender.send(BridgeEvent::TargetState {
+            target: target_state_for_device(&target, &device_id),
+            target_epoch: Some(runtime.host_target_epoch()),
+        });
+    }
+}
+
+fn send_target_state_to_device(runtime: &Arc<AppRuntime>, device_id: &str) {
+    let target = runtime.target();
+    let Some(sender) = runtime.session_sender(device_id) else {
+        return;
+    };
+    let _ = sender.send(BridgeEvent::TargetState {
+        target: target_state_for_device(&target, device_id),
+        target_epoch: Some(runtime.host_target_epoch()),
+    });
+}
+
+fn handle_tcp_mouse_activity(
+    runtime: &Arc<AppRuntime>,
+    event_tx: &mpsc::Sender<HostEvent>,
+    device_id: &str,
+    generation: u64,
+    activity_id: Option<u64>,
+    target_epoch: Option<u64>,
+) -> bool {
+    if let (Some(activity_id), Some(target_epoch)) = (activity_id, target_epoch) {
+        if !runtime.session_generation_matches(device_id, generation) {
+            return false;
+        }
+        if target_epoch != runtime.host_target_epoch() {
+            send_target_state_to_device(runtime, device_id);
+            return false;
+        }
+        if !runtime.validate_tcp_activity(device_id, generation, activity_id) {
+            return false;
+        }
+        runtime.mark_session_tcp_activity_transport(device_id, generation);
+    }
+    event_tx
+        .send(HostEvent::RemoteActivity {
+            device_id: device_id.to_string(),
+            generation,
+        })
+        .is_ok()
+}
+
+fn target_state_for_device(target: &KeyboardTarget, device_id: &str) -> TargetSide {
+    if target.device_id() == Some(device_id) {
+        TargetSide::Remote
+    } else {
+        TargetSide::Local
+    }
+}
+
+fn release_remote_inputs(runtime: &Arc<AppRuntime>, device_id: &str) {
+    let Some(sender) = runtime.session_sender(device_id) else {
+        return;
+    };
+    for button in [MouseButton::Left, MouseButton::Right, MouseButton::Middle] {
+        let _ = sender.send(BridgeEvent::MouseInput {
+            event: crate::protocol::MouseInputEvent::Button {
+                button,
+                action: MouseButtonAction::Up,
+            },
+        });
+    }
+    for vk_code in [0x10_u32, 0x11, 0x12, 0x5B, 0x5C] {
+        let _ = sender.send(BridgeEvent::Key {
+            action: KeyAction::Up,
+            key: format!("<{vk_code}>"),
+        });
+    }
+}
+
+fn update_modifier_state(event: &RawKeyEvent, ctrl_down: &mut bool, alt_down: &mut bool) {
+    match event.vk_code {
+        0x11 | 0xA2 | 0xA3 => *ctrl_down = event.is_down,
+        0x12 | 0xA4 | 0xA5 => *alt_down = event.is_down,
+        _ => {}
+    }
+}
+
+fn requested_target(target: TargetSide, device_id: &str) -> KeyboardTarget {
+    match target {
+        TargetSide::Local => KeyboardTarget::Local,
+        TargetSide::Remote => KeyboardTarget::Device(device_id.to_string()),
+    }
+}
+
+fn target_after_disconnect(current: &KeyboardTarget, device_id: &str) -> KeyboardTarget {
+    if current.device_id() == Some(device_id) {
+        KeyboardTarget::Local
+    } else {
+        current.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::TargetSide;
+    use crate::routing::KeyboardTarget;
+
+    fn connect_test_client(address: SocketAddr, device_id: &str) -> (TcpStream, BridgeEvent) {
+        let mut stream = TcpStream::connect(address).unwrap();
+        stream
+            .write_all(
+                &encode_event(&BridgeEvent::ClientHello {
+                    role: crate::protocol::ClientRole::Remote,
+                    device_id: Some(device_id.to_string()),
+                    device_name: Some(device_id.to_string()),
+                    capabilities: vec![
+                        "multi_remote_v1".to_string(),
+                        "server_hello_v1".to_string(),
+                        "udp_activity_v1".to_string(),
+                        "host_latency_v2".to_string(),
+                    ],
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        (stream, decode_event(line.as_bytes()).unwrap())
+    }
+
+    #[test]
+    fn loopback_host_accepts_two_clients_and_rejects_third() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let state = crate::app_state::SharedState::new("test");
+        let runtime = state.runtime();
+        let (event_tx, _event_rx) = mpsc::channel();
+        let accept_runtime = runtime.clone();
+        let accept_thread = thread::spawn(move || {
+            for _ in 0..3 {
+                let (stream, peer) = listener.accept().unwrap();
+                let handler_runtime = accept_runtime.clone();
+                let handler_tx = event_tx.clone();
+                thread::spawn(move || {
+                    handle_host_connection(handler_runtime, stream, peer, handler_tx).unwrap();
+                });
+            }
+        });
+
+        let (client_a, hello_a) = connect_test_client(address, "device-a");
+        let (client_b, hello_b) = connect_test_client(address, "device-b");
+        let (client_c, hello_c) = connect_test_client(address, "device-c");
+
+        assert!(matches!(
+            hello_a,
+            BridgeEvent::ServerHello {
+                accepted: true,
+                max_devices: 2,
+                ..
+            }
+        ));
+        assert!(matches!(
+            hello_b,
+            BridgeEvent::ServerHello {
+                accepted: true,
+                max_devices: 2,
+                ..
+            }
+        ));
+        assert!(matches!(
+            hello_c,
+            BridgeEvent::ServerHello {
+                accepted: false,
+                max_devices: 2,
+                ..
+            }
+        ));
+        assert_eq!(state.snapshot().devices.len(), 2);
+
+        drop((client_a, client_b, client_c));
+        accept_thread.join().unwrap();
+    }
+
+    #[test]
+    fn loopback_host_keeps_connection_alive_after_handshake() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let state = crate::app_state::SharedState::new("test");
+        let runtime = state.runtime();
+        runtime.start(crate::app_state::AppMode::Host);
+        let (event_tx, _event_rx) = mpsc::channel();
+        let handler = thread::spawn(move || {
+            let (stream, peer) = loop {
+                match listener.accept() {
+                    Ok(connection) => break connection,
+                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                    Err(err) => panic!("accept failed: {err}"),
+                }
+            };
+            thread::sleep(Duration::from_millis(20));
+            stream.set_nonblocking(true).unwrap();
+            handle_host_connection(runtime, stream, peer, event_tx).unwrap();
+        });
+
+        let (mut stream, hello) = connect_test_client(address, "persistent-device");
+        assert!(matches!(
+            hello,
+            BridgeEvent::ServerHello { accepted: true, .. }
+        ));
+        stream
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut line = String::new();
+        let mut messages_seen = 0_u8;
+        let probe_id = loop {
+            let bytes = reader.read_line(&mut line).unwrap();
+            assert!(
+                bytes > 0,
+                "host closed the connection immediately after handshake"
+            );
+            messages_seen += 1;
+            if let BridgeEvent::Ping {
+                probe_id: Some(probe_id),
+                ..
+            } = decode_event(line.as_bytes()).unwrap()
+            {
+                break probe_id;
+            }
+            assert!(messages_seen < 4, "host did not send a latency probe");
+            line.clear();
+        };
+        stream
+            .write_all(
+                &encode_event(&BridgeEvent::Ping {
+                    message: "latency-reply".to_string(),
+                    probe_id: None,
+                    reply_to: Some(probe_id),
+                })
+                .unwrap(),
+            )
+            .unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while state.snapshot().devices[0].latency_ms.is_none() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        let device = &state.snapshot().devices[0];
+        assert!(device.latency_ms.is_some());
+        assert!(device.link_stats.is_some());
+
+        line.clear();
+        let mut received_stats = false;
+        for _ in 0..4 {
+            if reader.read_line(&mut line).unwrap() == 0 {
+                break;
+            }
+            if matches!(
+                decode_event(line.as_bytes()).unwrap(),
+                BridgeEvent::LinkStatsState { .. }
+            ) {
+                received_stats = true;
+                break;
+            }
+            line.clear();
+        }
+        assert!(
+            received_stats,
+            "host did not sync link statistics to remote"
+        );
+
+        drop(reader);
+        drop(stream);
+        handler.join().unwrap();
+    }
+
+    #[test]
+    fn loopback_host_replies_with_legacy_ping_before_old_client_updates() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let state = crate::app_state::SharedState::new("test");
+        let runtime = state.runtime();
+        let (event_tx, _event_rx) = mpsc::channel();
+        let handler = thread::spawn(move || {
+            let (stream, peer) = listener.accept().unwrap();
+            handle_host_connection(runtime, stream, peer, event_tx).unwrap();
+        });
+
+        let mut stream = TcpStream::connect(address).unwrap();
+        stream
+            .write_all(
+                &encode_event(&BridgeEvent::ClientHello {
+                    role: crate::protocol::ClientRole::Remote,
+                    device_id: None,
+                    device_name: None,
+                    capabilities: Vec::new(),
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+
+        assert!(matches!(
+            decode_event(line.as_bytes()).unwrap(),
+            BridgeEvent::Ping { .. }
+        ));
+
+        drop(reader);
+        drop(stream);
+        handler.join().unwrap();
+    }
+
+    #[test]
+    fn remote_request_targets_the_requesting_device() {
+        assert_eq!(
+            requested_target(TargetSide::Remote, "device-a"),
+            KeyboardTarget::Device("device-a".to_string())
+        );
+        assert_eq!(
+            requested_target(TargetSide::Local, "device-a"),
+            KeyboardTarget::Local
+        );
+    }
+
+    #[test]
+    fn disconnecting_active_device_falls_back_to_local() {
+        assert_eq!(
+            target_after_disconnect(&KeyboardTarget::Device("device-a".to_string()), "device-a"),
+            KeyboardTarget::Local
+        );
+    }
+
+    #[test]
+    fn disconnecting_inactive_device_keeps_current_target() {
+        let current = KeyboardTarget::Device("device-b".to_string());
+
+        assert_eq!(target_after_disconnect(&current, "device-a"), current);
+    }
+
+    #[test]
+    fn accepted_server_hello_advertises_udp_activity_metadata() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let state = crate::app_state::SharedState::new("test");
+        let runtime = state.runtime();
+        let (event_tx, _event_rx) = mpsc::channel();
+        let handler = thread::spawn(move || {
+            let (stream, peer) = listener.accept().unwrap();
+            handle_host_connection(runtime, stream, peer, event_tx).unwrap();
+        });
+
+        let (stream, hello) = connect_test_client(address, "device-a");
+
+        assert!(matches!(
+            hello,
+            BridgeEvent::ServerHello {
+                accepted: true,
+                max_devices: 2,
+                capabilities,
+                activity_token: Some(_),
+                activity_port: Some(8766),
+                ..
+            } if capabilities == vec![
+                UDP_ACTIVITY_CAPABILITY.to_string(),
+                HOST_LATENCY_CAPABILITY.to_string(),
+            ]
+        ));
+
+        drop(stream);
+        handler.join().unwrap();
+    }
+
+    #[test]
+    fn target_state_broadcast_includes_current_host_epoch() {
+        let state = crate::app_state::SharedState::new("test");
+        let runtime = state.runtime();
+        runtime.start(crate::app_state::AppMode::Host);
+        let (sender, receiver) = mpsc::channel();
+        let accepted = runtime
+            .register_session(
+                crate::sessions::SessionIdentity {
+                    device_id: Some("device-a".to_string()),
+                    device_name: Some("Windows-A".to_string()),
+                    address: "10.0.0.1:8765".to_string(),
+                },
+                sender,
+            )
+            .accepted()
+            .unwrap();
+
+        let changed = switch_target(
+            &runtime,
+            KeyboardTarget::Device(accepted.device_id.clone()),
+            "test\n",
+        );
+        assert!(changed);
+
+        let target_state = receiver
+            .try_iter()
+            .find(|event| matches!(event, BridgeEvent::TargetState { .. }))
+            .expect("target state should be broadcast");
+        assert_eq!(
+            target_state,
+            BridgeEvent::TargetState {
+                target: TargetSide::Remote,
+                target_epoch: Some(2),
+            }
+        );
+    }
+
+    #[test]
+    fn stale_tcp_activity_is_ignored_and_current_target_state_is_resent() {
+        let state = crate::app_state::SharedState::new("test");
+        let runtime = state.runtime();
+        runtime.start(crate::app_state::AppMode::Host);
+        let (sender, receiver) = mpsc::channel();
+        let accepted = runtime
+            .register_session(
+                crate::sessions::SessionIdentity {
+                    device_id: Some("device-a".to_string()),
+                    device_name: Some("Windows-A".to_string()),
+                    address: "10.0.0.1:8765".to_string(),
+                },
+                sender,
+            )
+            .accepted()
+            .unwrap();
+        runtime.set_host_target(KeyboardTarget::Device(accepted.device_id.clone()));
+        runtime.set_host_target(KeyboardTarget::Local);
+        let (host_event_tx, host_event_rx) = mpsc::channel();
+
+        assert!(!handle_tcp_mouse_activity(
+            &runtime,
+            &host_event_tx,
+            &accepted.device_id,
+            accepted.generation,
+            Some(1),
+            Some(2),
+        ));
+        assert!(host_event_rx.try_recv().is_err());
+        assert_eq!(
+            receiver
+                .try_iter()
+                .filter(|event| matches!(event, BridgeEvent::TargetState { .. }))
+                .last(),
+            Some(BridgeEvent::TargetState {
+                target: TargetSide::Local,
+                target_epoch: Some(3),
+            })
+        );
+    }
+
+    #[test]
+    fn tcp_activity_with_current_epoch_and_id_is_forwarded_once() {
+        let state = crate::app_state::SharedState::new("test");
+        let runtime = state.runtime();
+        runtime.start(crate::app_state::AppMode::Host);
+        let (sender, _receiver) = mpsc::channel();
+        let accepted = runtime
+            .register_session_with_activity_support(
+                crate::sessions::SessionIdentity {
+                    device_id: Some("device-a".to_string()),
+                    device_name: Some("Windows-A".to_string()),
+                    address: "10.0.0.1:8765".to_string(),
+                },
+                sender,
+                true,
+            )
+            .accepted()
+            .unwrap();
+        let (host_event_tx, host_event_rx) = mpsc::channel();
+        assert_eq!(
+            runtime.validate_session_activity_hello(
+                &accepted.device_id,
+                accepted.activity_token.as_deref().unwrap(),
+                "10.0.0.1",
+            ),
+            Some(accepted.generation)
+        );
+        assert_eq!(state.snapshot().devices[0].activity_transport, "udp");
+
+        assert!(handle_tcp_mouse_activity(
+            &runtime,
+            &host_event_tx,
+            &accepted.device_id,
+            accepted.generation,
+            Some(1),
+            Some(1),
+        ));
+        assert!(matches!(
+            host_event_rx.try_recv().unwrap(),
+            HostEvent::RemoteActivity { device_id, generation }
+                if device_id == "device-a" && generation == accepted.generation
+        ));
+        assert_eq!(state.snapshot().devices[0].activity_transport, "tcp");
+        assert!(!handle_tcp_mouse_activity(
+            &runtime,
+            &host_event_tx,
+            &accepted.device_id,
+            accepted.generation,
+            Some(1),
+            Some(1),
+        ));
+    }
+}

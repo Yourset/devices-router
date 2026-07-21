@@ -1,4 +1,4 @@
-use crate::app_state::{AppStatus, KeyboardTarget, SharedState};
+use crate::app_state::{AppStatus, SharedState};
 use std::thread;
 use std::time::Duration;
 use tauri::image::Image;
@@ -18,7 +18,7 @@ pub enum TrayState {
 }
 
 pub fn tray_state(status: &AppStatus) -> TrayState {
-    if status.connected && status.target == KeyboardTarget::Remote {
+    if status.connected && status.active_device_id.is_some() {
         TrayState::Controlling
     } else if status.connected {
         TrayState::ConnectedIdle
@@ -45,23 +45,41 @@ pub fn tray_label(state: TrayState) -> &'static str {
     }
 }
 
+fn tray_status_label(status: &AppStatus) -> String {
+    match tray_state(status) {
+        TrayState::Controlling => {
+            let name = status
+                .active_device_id
+                .as_deref()
+                .and_then(|id| status.devices.iter().find(|device| device.device_id == id))
+                .map(|device| device.name.as_str())
+                .unwrap_or("remote computer");
+            format!("green: keyboard is controlling {name}")
+        }
+        other => tray_label(other).to_string(),
+    }
+}
+
 pub fn install_tray(app: &App, state: SharedState) -> tauri::Result<()> {
+    let initial_status = state.snapshot();
+    let initial_state = tray_state(&initial_status);
+    let initial_label = tray_status_label(&initial_status);
     let status_item = MenuItem::with_id(
         app,
         "devices-router-status",
-        tray_label(tray_state(&state.snapshot())),
+        &initial_label,
         false,
         None::<&str>,
     )?;
     let release_item = MenuItem::with_id(
         app,
         RELEASE_CONTROL_ID,
-        "立即释放控制（Ctrl+Alt+Esc）",
+        "Emergency release (Ctrl+Alt+Esc)",
         true,
         None::<&str>,
     )?;
-    let show_item = MenuItem::with_id(app, SHOW_WINDOW_ID, "显示窗口", true, None::<&str>)?;
-    let quit_item = MenuItem::with_id(app, QUIT_ID, "退出", true, None::<&str>)?;
+    let show_item = MenuItem::with_id(app, SHOW_WINDOW_ID, "Show window", true, None::<&str>)?;
+    let quit_item = MenuItem::with_id(app, QUIT_ID, "Quit", true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
     let menu = Menu::with_items(
         app,
@@ -73,18 +91,17 @@ pub fn install_tray(app: &App, state: SharedState) -> tauri::Result<()> {
             &quit_item,
         ],
     )?;
-    let initial_state = tray_state(&state.snapshot());
     let menu_state = state.clone();
     let tray = TrayIconBuilder::with_id("devices-router-status")
         .menu(&menu)
         .icon(tray_icon(initial_state))
-        .tooltip(tray_label(initial_state))
+        .tooltip(&initial_label)
         .show_menu_on_left_click(true)
         .on_menu_event(move |app, event| match event.id().as_ref() {
             RELEASE_CONTROL_ID => {
                 crate::core::force_local_release(
                     &menu_state.runtime(),
-                    "[安全] 托盘已立即释放控制：键盘和鼠标回到主电脑\n",
+                    "[safety] tray emergency release: keyboard returned to host\n",
                 );
             }
             SHOW_WINDOW_ID => show_main_window(app),
@@ -95,17 +112,20 @@ pub fn install_tray(app: &App, state: SharedState) -> tauri::Result<()> {
 
     thread::spawn(move || {
         let mut last_state = initial_state;
+        let mut last_label = initial_label;
         loop {
             thread::sleep(Duration::from_millis(500));
-            let next_state = tray_state(&state.snapshot());
-            if next_state == last_state {
+            let status = state.snapshot();
+            let next_state = tray_state(&status);
+            let next_label = tray_status_label(&status);
+            if next_state == last_state && next_label == last_label {
                 continue;
             }
             last_state = next_state;
-            let label = tray_label(next_state);
+            last_label = next_label.clone();
             let _ = tray.set_icon(Some(tray_icon(next_state)));
-            let _ = tray.set_tooltip(Some(label));
-            let _ = status_item.set_text(label);
+            let _ = tray.set_tooltip(Some(&next_label));
+            let _ = status_item.set_text(&next_label);
         }
     });
 
@@ -144,6 +164,7 @@ mod tests {
     use super::*;
     use crate::app_state::AppStatus;
     use crate::config::AppConfig;
+    use crate::routing::KeyboardTarget;
 
     fn status(connected: bool, target: KeyboardTarget) -> AppStatus {
         AppStatus {
@@ -151,7 +172,13 @@ mod tests {
             mode: "host".to_string(),
             running: true,
             connected,
-            target,
+            target: target.as_status_value(),
+            local_device_name: "Host-PC".to_string(),
+            active_device_id: target.is_remote().then(|| target.as_status_value()),
+            devices: Vec::new(),
+            host_latency_ms: None,
+            link_stats: None,
+            activity_transport: "tcp".to_string(),
             elevated: false,
             logs: Vec::new(),
             config: AppConfig::default(),
@@ -161,7 +188,7 @@ mod tests {
     #[test]
     fn connected_remote_target_is_controlling() {
         assert_eq!(
-            tray_state(&status(true, KeyboardTarget::Remote)),
+            tray_state(&status(true, KeyboardTarget::Device("a".to_string()))),
             TrayState::Controlling
         );
     }
@@ -177,9 +204,26 @@ mod tests {
     #[test]
     fn disconnected_is_red_state() {
         assert_eq!(
-            tray_state(&status(false, KeyboardTarget::Remote)),
+            tray_state(&status(false, KeyboardTarget::Device("a".to_string()))),
             TrayState::Disconnected
         );
+    }
+
+    #[test]
+    fn tray_status_label_names_the_active_device() {
+        let mut status = status(true, KeyboardTarget::Device("device-a".to_string()));
+        status.devices.push(crate::sessions::DeviceStatus {
+            device_id: "device-a".to_string(),
+            name: "Studio PC".to_string(),
+            address: "10.0.0.2:8765".to_string(),
+            connected: true,
+            legacy: false,
+            last_activity_ago_ms: Some(0),
+            latency_ms: Some(4),
+            link_stats: None,
+            activity_transport: "tcp".to_string(),
+        });
+        assert!(tray_status_label(&status).contains("Studio PC"));
     }
 
     #[test]

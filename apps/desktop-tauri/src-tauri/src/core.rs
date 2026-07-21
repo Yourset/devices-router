@@ -1,3 +1,9 @@
+#![allow(dead_code)]
+
+use crate::activity_transport::{
+    queue_remote_mouse_activity, spawn_remote_activity_sender, RemoteActivitySender,
+    UDP_ACTIVITY_CAPABILITY,
+};
 use crate::app_state::{AppMode, AppRuntime, KeyboardTarget};
 use crate::config::AppConfig;
 use crate::discovery::{broadcast_host, discover_host, scan_local_network};
@@ -5,6 +11,7 @@ use crate::input::{release_local_modifiers, send_key_event, send_mouse_input_eve
 use crate::keyboard_hook::{
     run_keyboard_hook, set_key_suppression, take_panic_request, RawKeyEvent,
 };
+use crate::latency::{LatencyProbeTracker, LinkStats, HOST_LATENCY_CAPABILITY};
 use crate::mouse::{
     at_left_edge, at_right_edge, cursor_position, screen_center, set_cursor_position,
     virtual_screen_rect, MousePosition, ScreenRect,
@@ -14,12 +21,16 @@ use crate::protocol::{
     decode_event, encode_event, BridgeEvent, ClientRole, KeyAction, MouseButton, MouseButtonAction,
     MouseInputEvent, MouseSource, TargetSide,
 };
+use crate::transport::{
+    background_send_after_outbound_for_mode, background_send_due_for_mode,
+    background_send_wait_for_mode, configure_control_stream, BackgroundSendDue,
+};
 use crate::updates::{check_remote_update, host_from_socket_addr, start_update_server};
-use anyhow::{Context, Result};
-use std::io::{BufRead, BufReader, Write};
+use anyhow::{bail, Context, Result};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -51,8 +62,7 @@ impl Drop for HostSessionSafetyGuard {
 }
 
 pub fn force_local_release(runtime: &Arc<AppRuntime>, log_line: &str) -> bool {
-    let changed = runtime.target() != KeyboardTarget::Local;
-    runtime.set_target(KeyboardTarget::Local);
+    let changed = crate::multi_host::switch_target(runtime, KeyboardTarget::Local, log_line);
     runtime.mark_local_release();
     runtime.mark_emergency_release();
     set_key_suppression(false);
@@ -60,9 +70,6 @@ pub fn force_local_release(runtime: &Arc<AppRuntime>, log_line: &str) -> bool {
     let _ = runtime.send_remote_event(BridgeEvent::TargetRequest {
         target: TargetSide::Local,
     });
-    if changed {
-        runtime.log(log_line);
-    }
     changed
 }
 
@@ -83,7 +90,7 @@ fn start_host(runtime: Arc<AppRuntime>) -> Result<()> {
     thread::Builder::new()
         .name("devices-router-host".to_string())
         .spawn(move || {
-            if let Err(err) = run_host(runtime.clone()) {
+            if let Err(err) = crate::multi_host::run(runtime.clone()) {
                 runtime.log(format!("[主电脑] 已停止：{err:#}\n"));
             }
         })
@@ -174,6 +181,7 @@ fn accept_remote_client(
     mut stream: TcpStream,
     address: SocketAddr,
 ) -> Result<Option<TcpStream>> {
+    configure_control_stream(&stream).context("configure host control stream")?;
     stream
         .set_read_timeout(Some(Duration::from_millis(900)))
         .context("设置握手超时失败")?;
@@ -189,6 +197,8 @@ fn accept_remote_client(
                 stream.set_read_timeout(None).context("恢复连接超时失败")?;
                 stream.write_all(&encode_event(&BridgeEvent::Ping {
                     message: "ok".to_string(),
+                    probe_id: None,
+                    reply_to: None,
                 })?)?;
                 runtime.log(format!("[主电脑] 副电脑已连接：{address}\n"));
                 Ok(Some(stream))
@@ -270,10 +280,10 @@ fn handle_host_client(
         }
         let config = runtime.config();
         let current_target = runtime.target();
-        let suppress_mouse = should_suppress_local_mouse_input(&config, current_target);
+        let suppress_mouse = should_suppress_local_mouse_input(&config, current_target.clone());
         if should_release_remote_inputs(
-            last_target,
-            current_target,
+            last_target.clone(),
+            current_target.clone(),
             mouse_was_suppressed,
             suppress_mouse,
         ) {
@@ -284,7 +294,7 @@ fn handle_host_client(
         }
         set_mouse_input_suppression(suppress_mouse);
         mouse_was_suppressed = suppress_mouse;
-        last_target = current_target;
+        last_target = current_target.clone();
         while let Ok(event) = mouse_rx.try_recv() {
             if suppress_mouse
                 && !send_bridge_event(
@@ -300,6 +310,8 @@ fn handle_host_client(
         if last_heartbeat.elapsed() >= HEARTBEAT_INTERVAL {
             let heartbeat = BridgeEvent::Ping {
                 message: "host-heartbeat".to_string(),
+                probe_id: None,
+                reply_to: None,
             };
             if let Err(err) = encode_event(&heartbeat).and_then(|bytes| {
                 writer.write_all(&bytes)?;
@@ -464,6 +476,7 @@ fn handle_host_client(
                 },
                 Ok(BridgeEvent::MouseActivity {
                     source: MouseSource::Remote,
+                    ..
                 }) => {
                     if should_follow_mouse_activity(&runtime.config())
                         && should_accept_remote_mouse_activity(
@@ -536,7 +549,7 @@ fn apply_host_target(
             runtime.log(format!("[主电脑] 释放本地修饰键失败：{err:#}\n"));
         }
     }
-    runtime.set_target(target);
+    runtime.set_target(target.clone());
     if target == KeyboardTarget::Local {
         runtime.mark_local_release();
     }
@@ -561,12 +574,23 @@ fn apply_host_target_and_notify(
     changed
 }
 
+fn target_state_for_device(target: &crate::routing::KeyboardTarget, device_id: &str) -> TargetSide {
+    if target.device_id() == Some(device_id) {
+        TargetSide::Remote
+    } else {
+        TargetSide::Local
+    }
+}
+
 fn send_target_state(runtime: &Arc<AppRuntime>, writer: &mut TcpStream) {
     let target = match runtime.target() {
         KeyboardTarget::Local => TargetSide::Local,
-        KeyboardTarget::Remote => TargetSide::Remote,
+        KeyboardTarget::Remote | KeyboardTarget::Device(_) => TargetSide::Remote,
     };
-    let event = BridgeEvent::TargetState { target };
+    let event = BridgeEvent::TargetState {
+        target,
+        target_epoch: None,
+    };
     if let Err(err) = encode_event(&event).and_then(|bytes| {
         writer.write_all(&bytes)?;
         Ok(())
@@ -675,6 +699,77 @@ fn start_remote(runtime: Arc<AppRuntime>) -> Result<()> {
     Ok(())
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum RemoteHandshake {
+    Accepted {
+        activity_capable: bool,
+        activity_token: Option<String>,
+        activity_port: Option<u16>,
+        host_latency_authoritative: bool,
+    },
+    LegacyHost,
+}
+
+fn classify_remote_handshake(event: BridgeEvent) -> Result<RemoteHandshake> {
+    match event {
+        BridgeEvent::ServerHello {
+            accepted: true,
+            capabilities,
+            activity_token,
+            activity_port,
+            ..
+        } => {
+            let activity_capable = capabilities.iter().any(|value| value == "udp_activity_v1");
+            let host_latency_authoritative = capabilities
+                .iter()
+                .any(|value| value == HOST_LATENCY_CAPABILITY);
+            Ok(RemoteHandshake::Accepted {
+                activity_capable,
+                activity_token: activity_capable.then_some(activity_token).flatten(),
+                activity_port: activity_capable.then_some(activity_port).flatten(),
+                host_latency_authoritative,
+            })
+        }
+        BridgeEvent::ServerHello {
+            accepted: false,
+            reason,
+            ..
+        } => bail!(
+            "{}",
+            reason.unwrap_or_else(|| "host rejected the connection".to_string())
+        ),
+        BridgeEvent::Ping { .. } => Ok(RemoteHandshake::LegacyHost),
+        other => bail!("unexpected host handshake response: {other:?}"),
+    }
+}
+
+fn read_remote_handshake(stream: &mut TcpStream) -> Result<RemoteHandshake> {
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .context("set host handshake timeout")?;
+    let mut bytes = Vec::with_capacity(256);
+    let mut byte = [0_u8; 1];
+    loop {
+        match stream.read(&mut byte) {
+            Ok(0) => bail!("host closed during handshake"),
+            Ok(_) => {
+                bytes.push(byte[0]);
+                if byte[0] == b'\n' {
+                    break;
+                }
+                if bytes.len() > 8 * 1024 {
+                    bail!("host handshake response is too large");
+                }
+            }
+            Err(err) => return Err(err).context("read host handshake response"),
+        }
+    }
+    stream
+        .set_read_timeout(None)
+        .context("clear host handshake timeout")?;
+    classify_remote_handshake(decode_event(&bytes)?)
+}
+
 fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
     while !runtime.should_stop() {
         let Some(target) = resolve_remote_target(&runtime) else {
@@ -683,11 +778,81 @@ fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
         };
         match TcpStream::connect(target.as_str()) {
             Ok(mut stream) => {
-                runtime.log(format!("[副电脑] 已连接主电脑：{target}\n"));
-                runtime.set_connected(true);
+                if let Err(err) = configure_control_stream(&stream) {
+                    runtime.log(format!(
+                        "[remote] failed to configure low-latency stream: {err}\n"
+                    ));
+                    thread::sleep(Duration::from_secs(2));
+                    continue;
+                }
+                let (event_tx, event_rx) = mpsc::channel::<BridgeEvent>();
+                let config = runtime.config();
                 stream.write_all(&encode_event(&BridgeEvent::ClientHello {
                     role: ClientRole::Remote,
+                    device_id: Some(config.device_id),
+                    device_name: Some(crate::config::computer_name()),
+                    capabilities: vec![
+                        "multi_remote_v1".to_string(),
+                        "server_hello_v1".to_string(),
+                        UDP_ACTIVITY_CAPABILITY.to_string(),
+                        HOST_LATENCY_CAPABILITY.to_string(),
+                    ],
                 })?)?;
+                let (activity_sender, host_latency_authoritative) = match read_remote_handshake(
+                    &mut stream,
+                ) {
+                    Ok(RemoteHandshake::Accepted {
+                        activity_capable,
+                        activity_token,
+                        activity_port,
+                        host_latency_authoritative,
+                    }) => {
+                        runtime.log(format!("[remote] connected to host: {target}\n"));
+                        let activity_sender = if activity_capable {
+                            match (
+                                stream.peer_addr().ok().map(|address| address.ip()),
+                                activity_token,
+                                activity_port,
+                            ) {
+                                (Some(host_ip), Some(activity_token), Some(activity_port)) => {
+                                    match spawn_remote_activity_sender(
+                                        Arc::clone(&runtime),
+                                        host_ip,
+                                        runtime.config().device_id.clone(),
+                                        activity_token,
+                                        activity_port,
+                                        event_tx.clone(),
+                                    ) {
+                                        Ok(sender) => Some(sender),
+                                        Err(err) => {
+                                            runtime.log(format!(
+                                                "[remote] udp activity setup failed, staying on tcp: {err:#}\n"
+                                            ));
+                                            None
+                                        }
+                                    }
+                                }
+                                _ => None,
+                            }
+                        } else {
+                            None
+                        };
+                        (activity_sender, host_latency_authoritative)
+                    }
+                    Ok(RemoteHandshake::LegacyHost) => {
+                        runtime.log(format!("[remote] connected to legacy host: {target}\n"));
+                        (None, false)
+                    }
+                    Err(err) => {
+                        runtime.set_connected(false);
+                        runtime.log(format!(
+                            "[remote] host rejected or failed handshake: {err:#}\n"
+                        ));
+                        thread::sleep(Duration::from_secs(2));
+                        continue;
+                    }
+                };
+                runtime.set_connected(true);
                 if let Ok(address) = stream.peer_addr() {
                     if let Some(host) = host_from_socket_addr(&address) {
                         check_remote_update(
@@ -700,34 +865,116 @@ fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
                 let mut writer = stream
                     .try_clone()
                     .context("clone remote stream for writer")?;
-                let (event_tx, event_rx) = mpsc::channel::<BridgeEvent>();
                 let sender_generation = runtime.set_remote_sender(event_tx.clone());
                 let writer_runtime = Arc::clone(&runtime);
+                let latency_tracker = Arc::new(Mutex::new(LatencyProbeTracker::default()));
+                let writer_latency_tracker = Arc::clone(&latency_tracker);
+                let remote_probe_enabled = !host_latency_authoritative;
                 thread::Builder::new()
                     .name("devices-router-remote-writer".to_string())
-                    .spawn(move || loop {
-                        let event = match event_rx.recv_timeout(HEARTBEAT_INTERVAL) {
-                            Ok(event) => event,
-                            Err(RecvTimeoutError::Timeout) => BridgeEvent::Ping {
-                                message: "remote-heartbeat".to_string(),
-                            },
-                            Err(RecvTimeoutError::Disconnected) => break,
-                        };
-                        let result = encode_event(&event).and_then(|bytes| {
-                            writer.write_all(&bytes)?;
-                            Ok(())
-                        });
-                        if let Err(err) = result {
-                            writer_runtime.log(format!("[副电脑] 发送控制消息失败：{err:#}\n"));
-                            break;
+                    .spawn(move || {
+                        let mut last_outbound = Instant::now();
+                        let mut last_probe = Instant::now();
+                        loop {
+                            let timeout = background_send_wait_for_mode(
+                                last_outbound,
+                                last_probe,
+                                Instant::now(),
+                                remote_probe_enabled,
+                            );
+                            let result = match event_rx.recv_timeout(timeout) {
+                                Ok(event) => encode_event(&event).and_then(|bytes| {
+                                    writer.write_all(&bytes)?;
+                                    let sent_at = Instant::now();
+                                    last_outbound = sent_at;
+                                    if matches!(
+                                        background_send_after_outbound_for_mode(
+                                            last_outbound,
+                                            last_probe,
+                                            sent_at,
+                                            remote_probe_enabled,
+                                        ),
+                                        Some(BackgroundSendDue::Probe)
+                                    ) {
+                                        let probe_sent_at = Instant::now();
+                                        let probe_id = writer_latency_tracker
+                                            .lock()
+                                            .expect("latency tracker lock poisoned")
+                                            .start_probe(probe_sent_at);
+                                        let probe = BridgeEvent::Ping {
+                                            message: "latency-probe".to_string(),
+                                            probe_id: Some(probe_id),
+                                            reply_to: None,
+                                        };
+                                        writer.write_all(&encode_event(&probe)?)?;
+                                        last_outbound = probe_sent_at;
+                                        last_probe = probe_sent_at;
+                                    }
+                                    Ok(())
+                                }),
+                                Err(RecvTimeoutError::Timeout) => {
+                                    match background_send_due_for_mode(
+                                        last_outbound,
+                                        last_probe,
+                                        Instant::now(),
+                                        remote_probe_enabled,
+                                    ) {
+                                        Some(BackgroundSendDue::Heartbeat) => {
+                                            let heartbeat = BridgeEvent::Ping {
+                                                message: "remote-heartbeat".to_string(),
+                                                probe_id: None,
+                                                reply_to: None,
+                                            };
+                                            encode_event(&heartbeat).and_then(|bytes| {
+                                                writer.write_all(&bytes)?;
+                                                last_outbound = Instant::now();
+                                                Ok(())
+                                            })
+                                        }
+                                        Some(BackgroundSendDue::Probe) => {
+                                            let now = Instant::now();
+                                            let probe_id = writer_latency_tracker
+                                                .lock()
+                                                .expect("latency tracker lock poisoned")
+                                                .start_probe(now);
+                                            let probe = BridgeEvent::Ping {
+                                                message: "latency-probe".to_string(),
+                                                probe_id: Some(probe_id),
+                                                reply_to: None,
+                                            };
+                                            encode_event(&probe).and_then(|bytes| {
+                                                writer.write_all(&bytes)?;
+                                                last_outbound = now;
+                                                last_probe = now;
+                                                Ok(())
+                                            })
+                                        }
+                                        None => Ok(()),
+                                    }
+                                }
+                                Err(RecvTimeoutError::Disconnected) => break,
+                            };
+                            if let Err(err) = result {
+                                writer_runtime.log(format!("[副电脑] 发送控制消息失败：{err:#}\n"));
+                                break;
+                            }
                         }
                     })
                     .context("spawn remote writer loop")?;
                 if MOUSE_ACTIVITY_FOLLOW_AVAILABLE {
                     let mouse_runtime = Arc::clone(&runtime);
+                    let mouse_event_tx = event_tx.clone();
+                    let mouse_activity_sender = activity_sender.clone();
                     thread::Builder::new()
                         .name("devices-router-remote-mouse".to_string())
-                        .spawn(move || run_remote_mouse_loop(mouse_runtime, event_tx))
+                        .spawn(move || {
+                            run_remote_mouse_loop(
+                                mouse_runtime,
+                                mouse_event_tx,
+                                mouse_activity_sender,
+                                sender_generation,
+                            )
+                        })
                         .context("spawn remote mouse loop")?;
                 }
                 let mut reader = BufReader::new(stream);
@@ -751,17 +998,47 @@ fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
                                     ));
                                 }
                             }
-                            Ok(BridgeEvent::TargetState { target }) => {
+                            Ok(BridgeEvent::TargetState {
+                                target,
+                                target_epoch,
+                            }) => {
                                 let target = match target {
                                     TargetSide::Local => KeyboardTarget::Local,
-                                    TargetSide::Remote => KeyboardTarget::Remote,
+                                    TargetSide::Remote => {
+                                        KeyboardTarget::Device(runtime.config().device_id)
+                                    }
                                 };
-                                runtime.set_target(target);
+                                runtime.apply_remote_target_state(target.clone(), target_epoch);
                                 let label = match target {
-                                    KeyboardTarget::Local => "主电脑",
-                                    KeyboardTarget::Remote => "副电脑",
+                                    KeyboardTarget::Local => "\u{4e3b}\u{7535}\u{8111}",
+                                    KeyboardTarget::Remote | KeyboardTarget::Device(_) => {
+                                        "\u{526f}\u{7535}\u{8111}"
+                                    }
                                 };
                                 runtime.log(format!("[副电脑] 主电脑确认键盘目标：{label}\n"));
+                            }
+                            Ok(BridgeEvent::ActivityChannelState { active }) => {
+                                runtime.set_activity_transport(active);
+                                if let Some(sender) = &activity_sender {
+                                    let _ = sender.set_ready(active);
+                                }
+                            }
+                            Ok(BridgeEvent::LinkStatsState {
+                                current_rtt_ms,
+                                median_rtt_ms,
+                                jitter_ms,
+                                loss_percent,
+                                sample_count,
+                            }) => {
+                                runtime.record_host_link_stats(LinkStats {
+                                    current_rtt_ms,
+                                    median_rtt_ms,
+                                    jitter_ms,
+                                    loss_percent: loss_percent
+                                        .and_then(|value| u8::try_from(value).ok())
+                                        .unwrap_or(0),
+                                    sample_count: usize::from(sample_count),
+                                });
                             }
                             Ok(BridgeEvent::MouseInput { event }) => {
                                 let config = runtime.config();
@@ -787,7 +1064,31 @@ fn run_remote(runtime: Arc<AppRuntime>) -> Result<()> {
                                     });
                                 }
                             }
-                            Ok(BridgeEvent::Ping { .. }) => {}
+                            Ok(BridgeEvent::Ping {
+                                probe_id, reply_to, ..
+                            }) => {
+                                if let Some(probe_id) = probe_id {
+                                    let _ = runtime.send_remote_event(BridgeEvent::Ping {
+                                        message: "latency-reply".to_string(),
+                                        probe_id: None,
+                                        reply_to: Some(probe_id),
+                                    });
+                                }
+                                if let Some(reply_to) = reply_to {
+                                    let sample_ms = latency_tracker
+                                        .lock()
+                                        .expect("latency tracker lock poisoned")
+                                        .complete_probe(reply_to, Instant::now());
+                                    if sample_ms.is_some() {
+                                        runtime.record_host_link_stats(
+                                            latency_tracker
+                                                .lock()
+                                                .expect("latency tracker lock poisoned")
+                                                .stats(),
+                                        );
+                                    }
+                                }
+                            }
                             Ok(other) => runtime.log(format!("[副电脑] 收到消息：{other:?}\n")),
                             Err(err) => runtime.log(format!("[副电脑] 已忽略异常消息：{err:#}\n")),
                         },
@@ -902,13 +1203,19 @@ fn resolve_remote_target(runtime: &Arc<AppRuntime>) -> Option<String> {
     }
 }
 
-fn run_remote_mouse_loop(runtime: Arc<AppRuntime>, event_tx: mpsc::Sender<BridgeEvent>) {
+fn run_remote_mouse_loop(
+    runtime: Arc<AppRuntime>,
+    event_tx: mpsc::Sender<BridgeEvent>,
+    activity_sender: Option<RemoteActivitySender>,
+    sender_generation: u64,
+) {
     let Ok(mut last) = cursor_position() else {
         runtime.log("[副电脑] 鼠标监听不可用\n");
         return;
     };
     let mut activity_logs = 0_u8;
-    while !runtime.should_stop() {
+    let mut next_activity_id = 0_u64;
+    while !runtime.should_stop() && runtime.remote_sender_generation_matches(sender_generation) {
         let config = runtime.config();
         thread::sleep(Duration::from_millis(
             config.mouse_follow.remote_report_interval_ms,
@@ -925,10 +1232,14 @@ fn run_remote_mouse_loop(runtime: Arc<AppRuntime>, event_tx: mpsc::Sender<Bridge
             continue;
         }
         last = current;
-        let event = BridgeEvent::MouseActivity {
-            source: MouseSource::Remote,
-        };
-        if event_tx.send(event).is_err() {
+        next_activity_id = next_activity_id.wrapping_add(1).max(1);
+        if !queue_remote_mouse_activity(
+            activity_sender.as_ref(),
+            &event_tx,
+            next_activity_id,
+            runtime.observed_host_target_epoch(),
+            runtime.target().is_remote(),
+        ) {
             runtime.log("[副电脑] 鼠标活动上报已停止，等待重新连接\n");
             return;
         }
@@ -1154,5 +1465,78 @@ mod tests {
             KeyboardTarget::Local,
             false,
         ));
+    }
+
+    #[test]
+    fn remote_handshake_accepts_new_and_legacy_hosts() {
+        assert_eq!(
+            classify_remote_handshake(BridgeEvent::ServerHello {
+                accepted: true,
+                reason: None,
+                max_devices: 2,
+                capabilities: vec!["udp_activity_v1".to_string(), "host_latency_v2".to_string(),],
+                activity_token: Some("token-123".to_string()),
+                activity_port: Some(8766),
+            })
+            .unwrap(),
+            RemoteHandshake::Accepted {
+                activity_capable: true,
+                activity_token: Some("token-123".to_string()),
+                activity_port: Some(8766),
+                host_latency_authoritative: true,
+            }
+        );
+        assert_eq!(
+            classify_remote_handshake(BridgeEvent::Ping {
+                message: "ok".to_string(),
+                probe_id: None,
+                reply_to: None,
+            })
+            .unwrap(),
+            RemoteHandshake::LegacyHost
+        );
+    }
+
+    #[test]
+    fn remote_handshake_surfaces_host_rejection_reason() {
+        let error = classify_remote_handshake(BridgeEvent::ServerHello {
+            accepted: false,
+            reason: Some("two device limit".to_string()),
+            max_devices: 2,
+            capabilities: Vec::new(),
+            activity_token: None,
+            activity_port: None,
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("two device limit"));
+    }
+
+    #[test]
+    fn remote_handshake_does_not_claim_udp_without_capability() {
+        assert_eq!(
+            classify_remote_handshake(BridgeEvent::ServerHello {
+                accepted: true,
+                reason: None,
+                max_devices: 2,
+                capabilities: Vec::new(),
+                activity_token: Some("token-123".to_string()),
+                activity_port: Some(8766),
+            })
+            .unwrap(),
+            RemoteHandshake::Accepted {
+                activity_capable: false,
+                activity_token: None,
+                activity_port: None,
+                host_latency_authoritative: false,
+            }
+        );
+    }
+
+    #[test]
+    fn target_state_is_remote_only_for_selected_device() {
+        let target = crate::routing::KeyboardTarget::Device("a".to_string());
+
+        assert_eq!(target_state_for_device(&target, "a"), TargetSide::Remote);
+        assert_eq!(target_state_for_device(&target, "b"), TargetSide::Local);
     }
 }

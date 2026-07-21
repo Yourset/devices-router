@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 #[cfg(windows)]
 use windows::Win32::Foundation::POINT;
 #[cfg(windows)]
