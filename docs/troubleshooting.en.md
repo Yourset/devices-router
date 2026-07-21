@@ -134,7 +134,7 @@ The current focus is stable English letters, numbers, common control keys, and b
 
 ## The second remote cannot connect
 
-- Confirm all three PCs run `v0.2.1`.
+- Confirm all three PCs run `v0.2.2`.
 - The host accepts two distinct remotes; a third receives an explicit two-device-limit rejection.
 - An old remote has no device ID and can only use the single legacy slot. Upgrade the host first, then each remote.
 - Disconnecting one remote must not affect the other. If the active remote disconnects, the keyboard immediately returns to the host.

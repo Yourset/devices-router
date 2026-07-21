@@ -84,7 +84,7 @@ let pendingAction: string | null = null;
 let diagnostics: NetworkDiagnostics | null = null;
 
 let status: AppStatus = {
-  version: "0.2.1",
+  version: "0.2.2",
   mode: "idle",
   running: false,
   connected: false,

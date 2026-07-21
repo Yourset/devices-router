@@ -59,11 +59,11 @@ def test_desktop_release_version_is_consistent():
     cargo = (DESKTOP / "src-tauri" / "Cargo.toml").read_text(encoding="utf-8")
     cargo_lock = (DESKTOP / "src-tauri" / "Cargo.lock").read_text(encoding="utf-8")
 
-    assert package["version"] == "0.2.1"
-    assert tauri["version"] == "0.2.1"
-    assert re.search(r'^version = "0\.2\.1"$', cargo, re.MULTILINE)
+    assert package["version"] == "0.2.2"
+    assert tauri["version"] == "0.2.2"
+    assert re.search(r'^version = "0\.2\.2"$', cargo, re.MULTILINE)
     assert re.search(
-        r'name = "devices-router"\s+version = "0\.2\.1"',
+        r'name = "devices-router"\s+version = "0\.2\.2"',
         cargo_lock,
         re.MULTILINE,
     )

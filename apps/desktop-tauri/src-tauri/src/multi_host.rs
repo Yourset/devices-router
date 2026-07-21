@@ -217,6 +217,9 @@ fn handle_host_connection(
     event_tx: mpsc::Sender<HostEvent>,
 ) -> Result<()> {
     stream
+        .set_nonblocking(false)
+        .context("set client stream blocking")?;
+    stream
         .set_read_timeout(Some(Duration::from_millis(900)))
         .context("client handshake stream")?;
     let mut handshake_reader =
@@ -684,6 +687,56 @@ mod tests {
 
         drop((client_a, client_b, client_c));
         accept_thread.join().unwrap();
+    }
+
+    #[test]
+    fn loopback_host_keeps_connection_alive_after_handshake() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let state = crate::app_state::SharedState::new("test");
+        let runtime = state.runtime();
+        runtime.start(crate::app_state::AppMode::Host);
+        let (event_tx, _event_rx) = mpsc::channel();
+        let handler = thread::spawn(move || {
+            let (stream, peer) = loop {
+                match listener.accept() {
+                    Ok(connection) => break connection,
+                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                    Err(err) => panic!("accept failed: {err}"),
+                }
+            };
+            thread::sleep(Duration::from_millis(20));
+            stream.set_nonblocking(true).unwrap();
+            handle_host_connection(runtime, stream, peer, event_tx).unwrap();
+        });
+
+        let (stream, hello) = connect_test_client(address, "persistent-device");
+        assert!(matches!(
+            hello,
+            BridgeEvent::ServerHello { accepted: true, .. }
+        ));
+        stream
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut line = String::new();
+        let bytes = reader.read_line(&mut line).unwrap();
+
+        assert!(
+            bytes > 0,
+            "host closed the connection immediately after handshake"
+        );
+        assert!(matches!(
+            decode_event(line.as_bytes()).unwrap(),
+            BridgeEvent::Ping { .. }
+        ));
+
+        drop(reader);
+        drop(stream);
+        handler.join().unwrap();
     }
 
     #[test]

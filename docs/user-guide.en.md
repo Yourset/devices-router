@@ -106,7 +106,7 @@ UAC prompts, elevated windows, some games, or protected windows may reject simul
 
 ## Three-PC Setup
 
-1. Install v0.2.1 on the host and start Host mode.
+1. Install v0.2.2 on the host and start Host mode.
 2. Install the same package on both remote PCs and start Remote mode on each.
 3. When both remotes appear on the host overview, optionally assign aliases.
 4. Mouse activity on any PC selects that PC after the 30 ms debounce window.
